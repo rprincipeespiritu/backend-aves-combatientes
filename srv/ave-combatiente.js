@@ -180,7 +180,8 @@ module.exports = cds.service.impl(async function () {
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
     // El action login no requiere token
-    if (req.event === "login" || req.event === "logout") return;
+    const accionesPublicas = ["login", "logout", "registrarUsuario"];
+    if (accionesPublicas.includes(req.event)) return;
 
     // Obtener token del header
     const authHeader =
@@ -241,6 +242,113 @@ module.exports = cds.service.impl(async function () {
         `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
       );
     }
+  });
+
+  this.on("registrarUsuario", async (req) => {
+    const { username, email, password, nombre, apellido, telefono, direccion } = req.data;
+
+    if (!username || !email || !password || !nombre || !apellido) {
+      return req.error(400, "username, email, password, nombre y apellido son requeridos");
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario, Rol } = cds.entities("ave.combatiente");
+
+    // Buscar usuario con su rol
+    const user = await SELECT.one
+      .from(Usuario)
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "password",
+        "activo",
+        "nombreCompleto",
+        "rol_ID",
+      )
+      .where({ email });
+
+    if (user) {
+      return req.error(409, "El email ya está registrado");
+    }
+
+    // Hashear password
+    const bcrypt = require("bcryptjs");
+    const passwordHash = await bcrypt.hash(password, 10);
+
+
+    let rolCodigo = "ADMIN",
+      rolNombre = "",
+      rol_id = "";
+    // Obtener nombre del rol    
+
+    const rol = await SELECT.one
+      .from("ave.combatiente.Rol")
+      .columns("codigo", "nombre", "ID")
+      .where({ codigo:  rolCodigo});
+    if (rol) {
+      rolCodigo = rol.codigo;
+      rolNombre = rol.nombre;
+      rol_id = rol.ID;
+    }
+
+
+    // Crear usuario
+    const nuevoUsuario = {
+      ID: require("crypto").randomUUID(),
+      username: username,
+      nombreCompleto: nombre + " " + apellido,
+      email: email,
+      password: passwordHash,
+      telefono: telefono,
+      direccion: direccion,
+      activo: true,
+      rol_ID: rol_id
+    };
+
+    console.log("rol_id: " + rol_id);
+
+    await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
+
+    const userCreated = await SELECT.one
+      .from(Usuario)
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "password",
+        "activo",
+        "nombreCompleto",
+        "rol_ID",
+      )
+      .where({ email });
+
+
+
+    // Generar token
+    const token = jwt.sign(
+      {
+        id: userCreated.ID,
+        username: userCreated.username,
+        email: userCreated.email,
+        rol: rolCodigo,
+        nombre: userCreated.nombreCompleto,
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES },
+    );
+
+    return {
+      success: true,
+      token,
+      user: {
+        username: userCreated.username,
+        nombre: userCreated.nombreCompleto,
+        email: userCreated.email,
+        rol: rolNombre,
+        userId: userCreated.ID,
+      },
+    };
   });
 
   //==========================================
@@ -589,9 +697,9 @@ module.exports = cds.service.impl(async function () {
 
     const edadMeses = ave.fechaNacimiento
       ? Math.floor(
-          (new Date() - new Date(ave.fechaNacimiento)) /
-            (30 * 24 * 60 * 60 * 1000),
-        )
+        (new Date() - new Date(ave.fechaNacimiento)) /
+        (30 * 24 * 60 * 60 * 1000),
+      )
       : 0;
 
     return {

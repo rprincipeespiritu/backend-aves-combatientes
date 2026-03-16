@@ -174,10 +174,10 @@ service AveCombatienteService {
     //========================================
 
     // Obtener árbol genealógico
-    function obtenerGenealogiaCompleta(aveId: String) returns LargeString;
+    function obtenerGenealogiaCompleta(aveId: String)                                                                                                   returns LargeString;
 
     // Calcular estadísticas de un ave
-    function calcularEstadisticasAve(aveId: String)   returns {
+    function calcularEstadisticasAve(aveId: String)                                                                                                     returns {
         totalPeleas         : Integer;
         victorias           : Integer;
         derrotas            : Integer;
@@ -189,10 +189,10 @@ service AveCombatienteService {
     };
 
     // Obtener aves disponibles para reproducción
-    function avesDisponiblesReproduccion()            returns array of Aves;
+    function avesDisponiblesReproduccion()                                                                                                              returns array of Aves;
 
     // Calcular rentabilidad de un ave
-    function calcularRentabilidad(aveId: String)      returns {
+    function calcularRentabilidad(aveId: String)                                                                                                        returns {
         inversionTotal : Decimal;
         ingresosTotal  : Decimal;
         ganancia       : Decimal;
@@ -207,22 +207,22 @@ service AveCombatienteService {
     action   crearIncubacion(padreId: String,
                              madreId: String,
                              totalHuevos: Integer,
-                             fechaIncubacion: Date)   returns Incubaciones;
+                             fechaIncubacion: Date)                                                                                                     returns Incubaciones;
 
     // Registrar pelea rápida
     action   registrarPelea(aveId: String,
                             fecha: DateTime,
                             lugar: String,
                             resultado: String,
-                            observaciones: String)    returns Peleas;
+                            observaciones: String)                                                                                                      returns Peleas;
 
     // Generar reporte de ave
-    action   generarReporteAve(aveId: String)         returns LargeString; // PDF Base64
+    action   generarReporteAve(aveId: String)                                                                                                           returns LargeString; // PDF Base64
 
     // Sincronizar con SharePoint
-    action   sincronizarSharePoint(aveId: String)     returns Boolean;
+    action   sincronizarSharePoint(aveId: String)                                                                                                       returns Boolean;
 
-    action   login(email: String, password: String)   returns {
+    action   registrarUsuario(username: String, email: String, password: String, nombre: String, apellido: String, telefono: String, direccion: String) returns {
         token    : String;
         username : String;
         email    : String;
@@ -230,7 +230,16 @@ service AveCombatienteService {
         userId   : String;
     };
 
-    action   logout()                                 returns {
+
+    action   login(email: String, password: String)                                                                                                     returns {
+        token    : String;
+        username : String;
+        email    : String;
+        rol      : String;
+        userId   : String;
+    };
+
+    action   logout()                                                                                                                                   returns {
         success : Boolean;
         message : String;
     };
