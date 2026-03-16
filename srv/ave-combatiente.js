@@ -264,6 +264,66 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
+  this.on("registrarRoles", async (req) => {
+    const { codigo, nombre, descripcion, permisos, activo } = req.data;
+
+    if (!codigo || !nombre || !activo) {
+      return req.error(400, "codigo, nombre y activo son requeridos");
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario, Rol } = cds.entities("ave.combatiente");
+
+    const rolValidate = await SELECT.one
+      .from(Rol)
+      .columns(
+        "ID",
+        "codigo",
+        "nombre",
+        "descripcion",
+        "permisos",
+        "activo"
+      )
+      .where({ codigo });
+
+    if(rolValidate){
+      return req.error(409, "El Rol ya está registrado");
+    }
+
+    // Crear usuario
+    const obj = {
+      ID: require("crypto").randomUUID(),
+      codigo: codigo,
+      nombre: nombre,
+      descripcion: descripcion,
+      permisos: permisos,
+      activo: activo
+    };
+
+    await db.run(INSERT.into(Rol).entries(obj));
+
+    const rolCreated = await SELECT.one
+      .from(Rol)
+      .columns(
+        "ID",
+        "codigo",
+        "nombre",
+        "descripcion",
+        "permisos",
+        "activo"
+      )
+      .where({ codigo });
+
+    return {
+      success: true,
+      codigo: rolCreated.codigo,
+      nombre: rolCreated.username,
+      descripcion: rolCreated.descripcion,
+      activo: rolCreated.activo
+    };
+
+  });
+
   this.on("registrarUsuario", async (req) => {
     const { username, email, password, nombre, apellido, telefono, direccion } = req.data;
 
@@ -441,10 +501,10 @@ module.exports = cds.service.impl(async function () {
     return {
       success: true,
       token,
-      username: userCreated.username,
-      email: userCreated.email,
+      username: user.username,
+      email: user.email,
       rol: rolNombre,
-      userId: userCreated.ID
+      userId: user.ID
     };
   });
 

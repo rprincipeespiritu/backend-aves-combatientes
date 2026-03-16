@@ -237,4 +237,12 @@ service AveCombatienteService {
         success : Boolean;
         message : String;
     };
+
+    action   registrarRoles(codigo: String, nombre: String, descripcion: String, permisos: String, activo: Boolean)                                     returns {
+        success     : Boolean;
+        codigo      : String;
+        nombre      : String;
+        descripcion : String;
+        activo      : String;
+    };
 }
