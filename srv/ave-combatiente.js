@@ -204,42 +204,62 @@ module.exports = cds.service.impl(async function () {
 
     // Verificar permisos por rol
     const rol = req.jwtUser.rol;
-    const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
     const operacion = req.event; // READ, CREATE, UPDATE, DELETE
+    const entidadRaw = req.target?.name || req.entity || "";
+    const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
+
 
     if (!entidad || !operacion) return;
 
     // Mapear nombre de entidad CDS al nombre del servicio
     const ENTIDAD_MAP = {
       Ave: "Aves",
+      Aves: "Aves",
       Pesaje: "Pesajes",
+      Pesajes: "Pesajes",
       Pelea: "Peleas",
+      Peleas: "Peleas",
       Incubacion: "Incubaciones",
+      Incubaciones: "Incubaciones",
       Tratamiento: "Tratamientos",
+      Tratamientos: "Tratamientos",
       Alimentacion: "Alimentaciones",
+      Alimentaciones: "Alimentaciones",
       Transaccion: "Transacciones",
+      Transacciones: "Transacciones",
       Raza: "Razas",
+      Razas: "Razas",
       Color: "Colores",
+      Colores: "Colores",
       TipoAve: "TiposAve",
+      TiposAve: "TiposAve",
       FotoAve: "FotosAve",
+      FotosAve: "FotosAve",
       VideoAve: "VideosAve",
+      VideosAve: "VideosAve",
       DocumentoAve: "DocumentosAve",
+      DocumentosAve: "DocumentosAve",
       FotoPelea: "FotosPelea",
+      FotosPelea: "FotosPelea",
       Usuario: "Usuarios",
+      Usuarios: "Usuarios",
       Rol: "Roles",
+      Roles: "Roles",
       HistorialCambios: "Historial",
+      Historial: "Historial",
     };
 
-    const entidadServicio = ENTIDAD_MAP[entidad] || entidad;
+    const entidadServicio = ENTIDAD_MAP[entidad];
     const permisosRol = PERMISOS_ROL[rol];
 
     if (!permisosRol) return req.reject(403, `Rol desconocido: ${rol}`);
+    if (!entidadServicio) return;
 
     const permisosEntidad = permisosRol[entidadServicio] || [];
     if (!permisosEntidad.includes(operacion)) {
       return req.reject(
         403,
-        `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
+        `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`
       );
     }
   });
@@ -285,7 +305,7 @@ module.exports = cds.service.impl(async function () {
     const rol = await SELECT.one
       .from("ave.combatiente.Rol")
       .columns("codigo", "nombre", "ID")
-      .where({ codigo:  rolCodigo});
+      .where({ codigo: rolCodigo });
     if (rol) {
       rolCodigo = rol.codigo;
       rolNombre = rol.nombre;
@@ -341,13 +361,10 @@ module.exports = cds.service.impl(async function () {
     return {
       success: true,
       token,
-      user: {
-        username: userCreated.username,
-        nombre: userCreated.nombreCompleto,
-        email: userCreated.email,
-        rol: rolNombre,
-        userId: userCreated.ID,
-      },
+      username: userCreated.username,
+      email: userCreated.email,
+      rol: rolNombre,
+      userId: userCreated.ID
     };
   });
 
@@ -424,13 +441,10 @@ module.exports = cds.service.impl(async function () {
     return {
       success: true,
       token,
-      user: {
-        username: user.username,
-        nombre: user.nombreCompleto,
-        email: user.email,
-        rol: rolNombre,
-        userId: user.ID,
-      },
+      username: userCreated.username,
+      email: userCreated.email,
+      rol: rolNombre,
+      userId: userCreated.ID
     };
   });
 
