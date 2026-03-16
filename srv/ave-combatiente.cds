@@ -59,16 +59,8 @@ service AveCombatienteService {
     // USUARIOS Y SEGURIDAD
     //========================================
 
-    @restrict: [{
-        grant: 'READ',
-        to   : 'Admin'
-    }]
     entity Usuarios            as projection on combatiente.Usuario;
 
-    @restrict: [{
-        grant: '*',
-        to   : 'Admin'
-    }]
     entity Roles               as projection on combatiente.Rol;
 
     //========================================
