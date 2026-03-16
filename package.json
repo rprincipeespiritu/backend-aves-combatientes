@@ -17,12 +17,14 @@
     "sqlite3": "^5.1.7"
   },
   "scripts": {
-    "start": "npm run migrate && cds-serve",
+    "start": "cds-serve",
     "migrate": "cds deploy --to postgres",
     "watch": "cds watch",
     "deploy": "cds deploy --to postgres",
     "build": "cds build",
-    "test": "jest"
+    "test": "jest",
+    "debug": "node --inspect ./node_modules/@sap/cds-dk/bin/cds.js watch",
+    "debug:brk": "node --inspect-brk ./node_modules/@sap/cds-dk/bin/cds.js watch"
   },
   "cds": {
     "requires": {
