@@ -215,6 +215,7 @@ service AveCombatienteService {
     action   sincronizarSharePoint(aveId: String)                                                                                                       returns Boolean;
 
     action   registrarUsuario(username: String, email: String, password: String, nombre: String, apellido: String, telefono: String, direccion: String) returns {
+        success  : Boolean;
         token    : String;
         username : String;
         email    : String;
@@ -224,6 +225,7 @@ service AveCombatienteService {
 
 
     action   login(email: String, password: String)                                                                                                     returns {
+        success  : Boolean;
         token    : String;
         username : String;
         email    : String;
