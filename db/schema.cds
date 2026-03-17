@@ -346,21 +346,22 @@ entity DocumentoAve : cuid, managed {
 //============================================
 
 entity Usuario : cuid, managed {
-    username       : String(50) @mandatory;
-    email          : String(100);
-    password       : String(255); // hash bcrypt
-    nombreCompleto : String(200);
-    telefono       : String(20);
+    username     : String(50) @mandatory;
+    email        : String(100);
+    password     : String(500); // hash bcrypt
+    nombre       : String(100);
+    apellido     : String(200);
+    telefono     : String(20);
 
     // Rol
-    rol            : Association to Rol;
+    rol          : Association to Rol;
 
     // Estado
-    activo         : Boolean default true;
-    ultimoAcceso   : DateTime;
+    activo       : Boolean default true;
+    ultimoAcceso : DateTime;
 
     // Preferencias
-    preferencias   : LargeString; // JSON
+    preferencias : LargeString; // JSON
 }
 
 entity Rol : cuid {

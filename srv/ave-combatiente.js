@@ -398,7 +398,10 @@ module.exports = cds.service.impl(async function () {
         "email",
         "password",
         "activo",
-        "nombreCompleto",
+        "nombre",
+        "apellido",
+        "telefono",
+        "direccion",
         "rol_ID",
       )
       .where({ email });
@@ -410,9 +413,11 @@ module.exports = cds.service.impl(async function () {
       {
         id: userCreated.ID,
         username: userCreated.username,
+        nombre: userCreated.nombre,
+        apellido: userCreated.apellido,
         email: userCreated.email,
         rol: rolCodigo,
-        nombre: userCreated.nombreCompleto,
+        activo: userCreated.activo 
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
@@ -421,10 +426,15 @@ module.exports = cds.service.impl(async function () {
     return {
       success: true,
       token,
+      userId: userCreated.ID,
       username: userCreated.username,
+      nombre: userCreated.nombreCompleto,
+      apellido: userCreated.apellido,
       email: userCreated.email,
       rol: rolNombre,
-      userId: userCreated.ID
+      activo: userCreated.activo,
+      telefono: userCreated.telefono,
+      direccion: userCreated.direccion    
     };
   });
 
