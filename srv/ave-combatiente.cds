@@ -215,12 +215,17 @@ service AveCombatienteService {
     action   sincronizarSharePoint(aveId: String)                                                                                                       returns Boolean;
 
     action   registrarUsuario(username: String, email: String, password: String, nombre: String, apellido: String, telefono: String, direccion: String) returns {
-        success  : Boolean;
-        token    : String;
-        username : String;
-        email    : String;
-        rol      : String;
-        userId   : String;
+        success   : Boolean;
+        token     : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        rol       : String;
+        activo    : Boolean;
+        telefono  : String;
+        direccion : String;
     };
 
 
