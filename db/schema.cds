@@ -352,6 +352,7 @@ entity Usuario : cuid, managed {
     nombre       : String(100);
     apellido     : String(200);
     telefono     : String(20);
+    direccion    : String(300);
 
     // Rol
     rol          : Association to Rol;

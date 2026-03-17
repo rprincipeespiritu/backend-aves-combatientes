@@ -343,7 +343,8 @@ module.exports = cds.service.impl(async function () {
         "email",
         "password",
         "activo",
-        "nombreCompleto",
+        "nombre",
+        "apellido",
         "rol_ID",
       )
       .where({ email });
@@ -365,28 +366,29 @@ module.exports = cds.service.impl(async function () {
     const rol = await SELECT.one
       .from("ave.combatiente.Rol")
       .columns("codigo", "nombre", "ID")
-      .where({ codigo: rolCodigo });
+      .where({ codigo: rolCodigo });    
+    
     if (rol) {
       rolCodigo = rol.codigo;
       rolNombre = rol.nombre;
       rol_id = rol.ID;
+    } else {
+      return req.error(400, "El Rol por defecto no se encuentra registrado en la tabla maestra");
     }
-
 
     // Crear usuario
     const nuevoUsuario = {
       ID: require("crypto").randomUUID(),
       username: username,
-      nombreCompleto: nombre + " " + apellido,
+      nombre: nombre,
+      apellido: apellido,
       email: email,
       password: passwordHash,
       telefono: telefono,
       direccion: direccion,
       activo: true,
       rol_ID: rol_id
-    };
-
-    console.log("rol_id: " + rol_id);
+    };    
 
     await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
 
@@ -428,7 +430,7 @@ module.exports = cds.service.impl(async function () {
       token,
       userId: userCreated.ID,
       username: userCreated.username,
-      nombre: userCreated.nombreCompleto,
+      nombre: userCreated.nombre,
       apellido: userCreated.apellido,
       email: userCreated.email,
       rol: rolNombre,
@@ -457,7 +459,8 @@ module.exports = cds.service.impl(async function () {
         "email",
         "password",
         "activo",
-        "nombreCompleto",
+        "nombre",
+        "apellido",
         "rol_ID",
       )
       .where({ email });
@@ -500,9 +503,11 @@ module.exports = cds.service.impl(async function () {
       {
         id: user.ID,
         username: user.username,
+        nombre: user.nombre,
+        apellido: user.apellido,
         email: user.email,
         rol: rolCodigo,
-        nombre: user.nombreCompleto,
+        activo: user.activo 
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
