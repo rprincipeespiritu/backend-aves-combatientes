@@ -517,6 +517,8 @@ module.exports = cds.service.impl(async function () {
       success: true,
       token,
       username: user.username,
+      nombre: user.nombre,
+      apellido: user.apellido,
       email: user.email,
       rol: rolNombre,
       userId: user.ID
