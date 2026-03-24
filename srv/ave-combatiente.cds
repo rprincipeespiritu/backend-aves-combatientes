@@ -81,8 +81,8 @@ service AveCombatienteService {
             *,
             padre.nombre as nombrePadre,
             madre.nombre as nombreMadre,
-            raza.nombre  as nombreRaza,
-            color.nombre as nombreColor
+            raza  as nombreRaza,
+            color as nombreColor
         }
         where
             estado = 'ACTIVO';

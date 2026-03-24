@@ -15,9 +15,7 @@ entity Raza : cuid {
     descripcion     : String(500);
     origen          : String(100);
     caracteristicas : LargeString;
-    activo          : Boolean default true;
-    aves            : Association to many Ave
-                          on aves.raza = $self;
+    activo          : Boolean default true;    
 }
 
 entity Color : cuid {
@@ -45,9 +43,9 @@ entity Ave : cuid, managed {
     apodo              : String(50);
 
     // Características físicas
-    raza               : Association to Raza;
-    color              : Association to Color;
-    tipoAve            : Association to TipoAve;
+    raza               : String(250);
+    color              : String(250);
+    tipoAve            : String(250);
     sexo               : String(1)  @assert.enum: {
         M,
         H
@@ -77,8 +75,9 @@ entity Ave : cuid, managed {
     estado             : String(20) @assert.enum: {
         ACTIVO,
         VENDIDO,
-        FALLECIDO,
-        PRESTADO
+        PRESTADO,
+        RETIRADO,
+        FALLECIDO
     };
     categoria          : String(20) @assert.enum: {
         BUENO,
