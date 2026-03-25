@@ -15,7 +15,7 @@ entity Raza : cuid {
     descripcion     : String(500);
     origen          : String(100);
     caracteristicas : LargeString;
-    activo          : Boolean default true;    
+    activo          : Boolean default true;
 }
 
 entity Color : cuid {
@@ -38,7 +38,7 @@ entity TipoAve : cuid {
 
 entity Ave : cuid, managed {
     // Identificación
-    placa              : String(20) @mandatory; // Placa única
+    placa              : String(20)             @mandatory; // Placa única
     nombre             : String(100);
     apodo              : String(50);
 
@@ -46,7 +46,7 @@ entity Ave : cuid, managed {
     raza               : String(250);
     color              : String(250);
     tipoAve            : String(250);
-    sexo               : String(1)  @assert.enum: {
+    sexo               : String(1)              @assert.enum: {
         M,
         H
     }; // Macho/Hembra
@@ -72,19 +72,19 @@ entity Ave : cuid, managed {
     observaciones      : LargeString;
 
     // Estado
-    estado             : String(20) @assert.enum: {
+    estado             : String(20)             @assert.enum: {
         ACTIVO,
         VENDIDO,
         PRESTADO,
         RETIRADO,
         FALLECIDO
     };
-    categoria          : String(20) @assert.enum: {
+    categoria          : String(20)             @assert.enum: {
         BUENO,
         EXCELENTE,
         EXTRAORDINARIO
     };
-    cruce              : String(20) @assert.enum: {
+    cruce              : String(20)             @assert.enum: {
         ABIERTO,
         INBREEDING
     };
@@ -103,6 +103,7 @@ entity Ave : cuid, managed {
                              on videos.ave = $self;
     documentos         : Composition of many DocumentoAve
                              on documentos.ave = $self;
+    usuario            : Association to Usuario @mandatory;
 
     // SharePoint
     sharepointFolderId : String(200);
@@ -362,6 +363,8 @@ entity Usuario : cuid, managed {
 
     // Preferencias
     preferencias : LargeString; // JSON
+    aves         : Association to many Ave
+                       on aves.usuario = $self;
 }
 
 entity Rol : cuid {
