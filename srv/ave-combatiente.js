@@ -286,7 +286,7 @@ module.exports = cds.service.impl(async function () {
       )
       .where({ codigo });
 
-    if(rolValidate){
+    if (rolValidate) {
       return req.error(409, "El Rol ya está registrado");
     }
 
@@ -366,8 +366,8 @@ module.exports = cds.service.impl(async function () {
     const rol = await SELECT.one
       .from("ave.combatiente.Rol")
       .columns("codigo", "nombre", "ID")
-      .where({ codigo: rolCodigo });    
-    
+      .where({ codigo: rolCodigo });
+
     if (rol) {
       rolCodigo = rol.codigo;
       rolNombre = rol.nombre;
@@ -388,7 +388,7 @@ module.exports = cds.service.impl(async function () {
       direccion: direccion,
       activo: true,
       rol_ID: rol_id
-    };    
+    };
 
     await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
 
@@ -419,7 +419,7 @@ module.exports = cds.service.impl(async function () {
         apellido: userCreated.apellido,
         email: userCreated.email,
         rol: rolCodigo,
-        activo: userCreated.activo 
+        activo: userCreated.activo
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
@@ -436,7 +436,7 @@ module.exports = cds.service.impl(async function () {
       rol: rolNombre,
       activo: userCreated.activo,
       telefono: userCreated.telefono,
-      direccion: userCreated.direccion    
+      direccion: userCreated.direccion
     };
   });
 
@@ -507,7 +507,7 @@ module.exports = cds.service.impl(async function () {
         apellido: user.apellido,
         email: user.email,
         rol: rolCodigo,
-        activo: user.activo 
+        activo: user.activo
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
@@ -552,6 +552,23 @@ module.exports = cds.service.impl(async function () {
     });
   });
 
+  this.before('READ', Aves, (req) => {
+    const userId = req.jwtUser && req.jwtUser.id;
+    console.log("imprimir req: " +JSON.stringify(req));
+    console.log("imprimir userId: " +JSON.stringify(userId));
+
+    if (!userId) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push('and');
+    }
+
+    req.query.SELECT.where.push(
+      { ref: ['usuario_ID'] }, '=', { val: userId }
+    );
+  });
   // Validar datos de ave antes de crear
   this.before("CREATE", "Aves", async (req) => {
     const { placa, fechaNacimiento, padre, madre } = req.data;
