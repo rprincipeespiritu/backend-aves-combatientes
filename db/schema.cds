@@ -88,6 +88,7 @@ entity Ave : cuid, managed {
         ABIERTO,
         INBREEDING
     };
+    cria               : Boolean;
     padrote            : Boolean;
     ubicacion          : String(200);
 
