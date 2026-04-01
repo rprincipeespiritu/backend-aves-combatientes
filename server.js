@@ -3,7 +3,7 @@ const cds = require('@sap/cds')
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || '*',
   allowedHeaders: ['Content-Type', 'Authorization'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true
 }
 
