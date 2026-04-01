@@ -6,7 +6,7 @@ const cors = require('cors');
 const corsOptions = {
     origin: process.env.CORS_ORIGIN || 'http://localhost:8080',
     allowedHeaders: ['Content-Type', 'Authorization'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true
 };
 
