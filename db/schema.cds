@@ -77,7 +77,8 @@ entity Ave : cuid, managed {
         VENDIDO,
         PRESTADO,
         RETIRADO,
-        FALLECIDO
+        FALLECIDO,
+        ELIMINADO
     };
     categoria          : String(20)             @assert.enum: {
         BUENO,
