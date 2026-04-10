@@ -17,9 +17,14 @@ service AveCombatienteService {
         actions {
             action marcarComoVendido(precio: Decimal, comprador: String) returns Aves;
             action marcarComoFallecido(fecha: Date, causa: String)       returns Aves;
-            action generarArbolGenealogico()                             returns LargeString; // JSON del árbol
+            action generarArbolGenealogico()                             returns LargeString; // JSON del árbol     
         };
 
+    action eliminarAve(aveId: String) returns {
+        success : Boolean;
+        message : String;
+    };
+    
     ////@odata.draft.enabled
     @cds.redirection.target
     entity Pesajes             as projection on combatiente.Pesaje;
@@ -77,15 +82,9 @@ service AveCombatienteService {
     // Vista: Aves activas con estadísticas
     @readonly
     entity AvesActivas         as
-        select from combatiente.Ave {
-            *,
-            padre.nombre as nombrePadre,
-            madre.nombre as nombreMadre,
-            raza  as nombreRaza,
-            color as nombreColor
-        }
+        select from combatiente.Ave 
         where
-            estado = 'ACTIVO';
+            estado <> 'ELIMINADO';
 
     // Vista: Top gallos por peleas ganadas
     @readonly
@@ -250,4 +249,5 @@ service AveCombatienteService {
         descripcion : String;
         activo      : String;
     };
+    
 }

@@ -921,4 +921,38 @@ module.exports = cds.service.impl(async function () {
 
     return nodo;
   }
+
+  this.on('eliminarAve', async (req) => {
+    try {
+        console.log("BODY:", req.data);
+
+        const aveId = req.data.aveId;
+
+        if (!aveId) {
+            return req.reject(400, 'El ID es obligatorio');
+        }
+
+        const ave = await SELECT.one.from(Aves).where({ ID: aveId });
+
+        if (!ave) {
+            return req.reject(404, 'Ave no encontrada');
+        }
+
+        await UPDATE(Aves)
+            .set({
+                estado: 'ELIMINADO'
+            })
+            .where({ ID: aveId });
+
+        return {
+            success: true,
+            message: 'Ave eliminada correctamente'
+        };
+
+    } catch (error) {
+        console.error("ERROR BACKEND:", error);
+        return req.reject(500, error.message);
+    }
+  });
+
 });
