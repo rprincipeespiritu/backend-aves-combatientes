@@ -6,6 +6,8 @@ const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "1h";
 
+const nodemailer = require("nodemailer");
+
 //============================================
 // PERMISOS POR ROL
 //============================================
@@ -208,7 +210,6 @@ module.exports = cds.service.impl(async function () {
     const entidadRaw = req.target?.name || req.entity || "";
     const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
 
-
     if (!entidad || !operacion) return;
 
     // Mapear nombre de entidad CDS al nombre del servicio
@@ -259,7 +260,7 @@ module.exports = cds.service.impl(async function () {
     if (!permisosEntidad.includes(operacion)) {
       return req.reject(
         403,
-        `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`
+        `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
       );
     }
   });
@@ -276,14 +277,7 @@ module.exports = cds.service.impl(async function () {
 
     const rolValidate = await SELECT.one
       .from(Rol)
-      .columns(
-        "ID",
-        "codigo",
-        "nombre",
-        "descripcion",
-        "permisos",
-        "activo"
-      )
+      .columns("ID", "codigo", "nombre", "descripcion", "permisos", "activo")
       .where({ codigo });
 
     if (rolValidate) {
@@ -297,21 +291,14 @@ module.exports = cds.service.impl(async function () {
       nombre: nombre,
       descripcion: descripcion,
       permisos: permisos,
-      activo: activo
+      activo: activo,
     };
 
     await db.run(INSERT.into(Rol).entries(obj));
 
     const rolCreated = await SELECT.one
       .from(Rol)
-      .columns(
-        "ID",
-        "codigo",
-        "nombre",
-        "descripcion",
-        "permisos",
-        "activo"
-      )
+      .columns("ID", "codigo", "nombre", "descripcion", "permisos", "activo")
       .where({ codigo });
 
     return {
@@ -319,20 +306,25 @@ module.exports = cds.service.impl(async function () {
       codigo: rolCreated.codigo,
       nombre: rolCreated.username,
       descripcion: rolCreated.descripcion,
-      activo: rolCreated.activo
+      activo: rolCreated.activo,
     };
-
   });
 
   this.on("registrarUsuario", async (req) => {
-    const { username, email, password, nombre, apellido, telefono, direccion } = req.data;
+    const { username, email, password, nombre, apellido, telefono, direccion } =
+      req.data;
 
     if (!username || !email || !password || !nombre || !apellido) {
-      return req.error(400, "username, email, password, nombre y apellido son requeridos");
+      return req.error(
+        400,
+        "username, email, password, nombre y apellido son requeridos",
+      );
     }
 
     const db = await cds.connect.to("db");
-    const { Usuario, Rol } = cds.entities("ave.combatiente");
+    const { Usuario } = cds.entities("ave.combatiente");
+    const emailNormalizado = email.trim().toLowerCase();
+    const usernameNormalizado = username.trim();
 
     // Buscar usuario con su rol
     const user = await SELECT.one
@@ -357,11 +349,10 @@ module.exports = cds.service.impl(async function () {
     const bcrypt = require("bcryptjs");
     const passwordHash = await bcrypt.hash(password, 10);
 
-
     let rolCodigo = "ADMIN",
       rolNombre = "",
       rol_id = "";
-    // Obtener nombre del rol    
+    // Obtener nombre del rol
 
     const rol = await SELECT.one
       .from("ave.combatiente.Rol")
@@ -373,70 +364,97 @@ module.exports = cds.service.impl(async function () {
       rolNombre = rol.nombre;
       rol_id = rol.ID;
     } else {
-      return req.error(400, "El Rol por defecto no se encuentra registrado en la tabla maestra");
+      return req.error(
+        400,
+        "El Rol por defecto no se encuentra registrado en la tabla maestra",
+      );
     }
+
+    // Generar token de activación
+    const tokenActivacion = crypto.randomBytes(32).toString("hex");
+    const tokenExpiracion = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 horas
 
     // Crear usuario
     const nuevoUsuario = {
       ID: require("crypto").randomUUID(),
-      username: username,
+      username: usernameNormalizado,
       nombre: nombre,
       apellido: apellido,
       email: email,
       password: passwordHash,
       telefono: telefono,
       direccion: direccion,
-      activo: true,
-      rol_ID: rol_id
+      estado: "PENDIENTE",
+      tokenActivacion,
+      tokenExpiracion,
+      rol_ID: rol_id,
     };
 
     await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
 
-    const userCreated = await SELECT.one
-      .from(Usuario)
-      .columns(
-        "ID",
-        "username",
-        "email",
-        "password",
-        "activo",
-        "nombre",
-        "apellido",
-        "telefono",
-        "direccion",
-        "rol_ID",
-      )
-      .where({ email });
-
-
-
-    // Generar token
-    const token = jwt.sign(
-      {
-        id: userCreated.ID,
-        username: userCreated.username,
-        nombre: userCreated.nombre,
-        apellido: userCreated.apellido,
-        email: userCreated.email,
-        rol: rolCodigo,
-        activo: userCreated.activo
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES },
-    );
+    // Enviar correo de activación
+    await enviarCorreoActivacion(emailNormalizado, tokenActivacion);
 
     return {
       success: true,
-      token,
-      userId: userCreated.ID,
-      username: userCreated.username,
-      nombre: userCreated.nombre,
-      apellido: userCreated.apellido,
-      email: userCreated.email,
+      message:
+        "Usuario registrado correctamente. Revisa tu correo para activar tu cuenta.",
+      userId: nuevoUsuario.ID,
+      username: nuevoUsuario.username,
+      nombre: nuevoUsuario.nombre,
+      apellido: nuevoUsuario.apellido,
+      email: nuevoUsuario.email,
       rol: rolNombre,
-      activo: userCreated.activo,
-      telefono: userCreated.telefono,
-      direccion: userCreated.direccion
+      estado: nuevoUsuario.estado,
+      telefono: nuevoUsuario.telefono,
+      direccion: nuevoUsuario.direccion,
+    };
+  });
+
+  this.on("reenviarActivacion", async (req) => {
+    const { email } = req.data;
+
+    if (!email) {
+      return req.error(400, "El email es requerido");
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario } = cds.entities("ave.combatiente");
+
+    const emailNormalizado = email.trim().toLowerCase();
+
+    const user = await db.run(
+      SELECT.one
+        .from(Usuario)
+        .columns("ID", "email", "estado", "nombre", "apellido")
+        .where({ email: emailNormalizado }),
+    );
+
+    if (!user) {
+      return req.error(404, "No existe un usuario con ese email");
+    }
+
+    if (user.estado === "ACTIVO") {
+      return req.error(400, "La cuenta ya está activada");
+    }
+
+    const nuevoTokenActivacion = crypto.randomBytes(32).toString("hex");
+    const nuevaExpiracion = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await db.run(
+      UPDATE(Usuario)
+        .set({
+          tokenActivacion: nuevoTokenActivacion,
+          tokenExpiracion: nuevaExpiracion,
+        })
+        .where({ ID: user.ID }),
+    );
+
+    await enviarCorreoActivacion(emailNormalizado, nuevoTokenActivacion);
+
+    return {
+      success: true,
+      message: "Se ha reenviado el correo de activación",
     };
   });
 
@@ -469,8 +487,11 @@ module.exports = cds.service.impl(async function () {
       return req.error(401, "Usuario no registrado");
     }
 
-    if (!user.activo) {
-      return req.error(401, "Usuario inactivo");
+    if (user.estado !== "ACTIVO") {
+      return req.error(
+        403,
+        "Tu cuenta aún no ha sido activada. Revisa tu correo.",
+      );
     }
 
     // Verificar password
@@ -507,7 +528,7 @@ module.exports = cds.service.impl(async function () {
         apellido: user.apellido,
         email: user.email,
         rol: rolCodigo,
-        activo: user.activo
+        activo: user.activo,
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
@@ -521,7 +542,7 @@ module.exports = cds.service.impl(async function () {
       apellido: user.apellido,
       email: user.email,
       rol: rolNombre,
-      userId: user.ID
+      userId: user.ID,
     };
   });
 
@@ -552,22 +573,20 @@ module.exports = cds.service.impl(async function () {
     });
   });
 
-  this.before('READ', Aves, (req) => {
+  this.before("READ", Aves, (req) => {
     const userId = req.jwtUser && req.jwtUser.id;
-    console.log("imprimir req: " +JSON.stringify(req));
-    console.log("imprimir userId: " +JSON.stringify(userId));
+    console.log("imprimir req: " + JSON.stringify(req));
+    console.log("imprimir userId: " + JSON.stringify(userId));
 
     if (!userId) return;
 
     if (!req.query.SELECT.where) {
       req.query.SELECT.where = [];
     } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push('and');
+      req.query.SELECT.where.push("and");
     }
 
-    req.query.SELECT.where.push(
-      { ref: ['usuario_ID'] }, '=', { val: userId }
-    );
+    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
   });
   // Validar datos de ave antes de crear
   this.before("CREATE", "Aves", async (req) => {
@@ -805,9 +824,9 @@ module.exports = cds.service.impl(async function () {
 
     const edadMeses = ave.fechaNacimiento
       ? Math.floor(
-        (new Date() - new Date(ave.fechaNacimiento)) /
-        (30 * 24 * 60 * 60 * 1000),
-      )
+          (new Date() - new Date(ave.fechaNacimiento)) /
+            (30 * 24 * 60 * 60 * 1000),
+        )
       : 0;
 
     return {
@@ -889,6 +908,34 @@ module.exports = cds.service.impl(async function () {
   // FUNCIONES AUXILIARES
   //========================================
 
+  async function enviarCorreoActivacion(email, tokenActivacion) {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: false,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    const urlBase = process.env.APP_URL || "http://localhost:8080";
+    const linkActivacion = `${urlBase}/activar-cuenta?token=${tokenActivacion}`;
+
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM || process.env.SMTP_USER,
+      to: email,
+      subject: "Activa tu cuenta",
+      html: `
+      <h2>Bienvenido</h2>
+      <p>Tu cuenta fue creada correctamente.</p>
+      <p>Haz clic en el siguiente enlace para activarla:</p>
+      <p><a href="${linkActivacion}">${linkActivacion}</a></p>
+      <p>Este enlace vence en 24 horas.</p>
+    `,
+    });
+  }
+
   async function construirArbolGenealogico(aveId, generaciones) {
     if (generaciones <= 0) return null;
 
@@ -922,37 +969,35 @@ module.exports = cds.service.impl(async function () {
     return nodo;
   }
 
-  this.on('eliminarAve', async (req) => {
+  this.on("eliminarAve", async (req) => {
     try {
-        console.log("BODY:", req.data);
+      console.log("BODY:", req.data);
 
-        const aveId = req.data.aveId;
+      const aveId = req.data.aveId;
 
-        if (!aveId) {
-            return req.reject(400, 'El ID es obligatorio');
-        }
+      if (!aveId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
 
-        const ave = await SELECT.one.from(Aves).where({ ID: aveId });
+      const ave = await SELECT.one.from(Aves).where({ ID: aveId });
 
-        if (!ave) {
-            return req.reject(404, 'Ave no encontrada');
-        }
+      if (!ave) {
+        return req.reject(404, "Ave no encontrada");
+      }
 
-        await UPDATE(Aves)
-            .set({
-                estado: 'ELIMINADO'
-            })
-            .where({ ID: aveId });
+      await UPDATE(Aves)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: aveId });
 
-        return {
-            success: true,
-            message: 'Ave eliminada correctamente'
-        };
-
+      return {
+        success: true,
+        message: "Ave eliminada correctamente",
+      };
     } catch (error) {
-        console.error("ERROR BACKEND:", error);
-        return req.reject(500, error.message);
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
     }
   });
-
 });

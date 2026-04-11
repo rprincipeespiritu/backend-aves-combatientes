@@ -215,18 +215,22 @@ service AveCombatienteService {
 
     action   registrarUsuario(username: String, email: String, password: String, nombre: String, apellido: String, telefono: String, direccion: String) returns {
         success   : Boolean;
-        token     : String;
+        message   : String;
         userId    : String;
         username  : String;
         nombre    : String;
         apellido  : String;
         email     : String;
         rol       : String;
-        activo    : Boolean;
+        estado    : String;
         telefono  : String;
         direccion : String;
     };
 
+    action reenviarActivacion( email : String ) returns {
+        success : Boolean;
+        message : String;
+    };
 
     action   login(email: String, password: String)                                                                                                     returns {
         success  : Boolean;
