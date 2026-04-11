@@ -360,7 +360,9 @@ entity Usuario : cuid, managed {
     rol          : Association to Rol;
 
     // Estado
-    activo       : Boolean default true;
+    estado             : String(20) default 'PENDIENTE'; // PENDIENTE | ACTIVO | ELIMINADO
+    tokenActivacion    : String(255);
+    tokenExpiracion    : Timestamp;
     ultimoAcceso : DateTime;
 
     // Preferencias
