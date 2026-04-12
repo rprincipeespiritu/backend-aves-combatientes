@@ -1,6 +1,7 @@
 const cds = require("@sap/cds");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
@@ -182,7 +183,7 @@ module.exports = cds.service.impl(async function () {
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
     // El action login no requiere token
-    const accionesPublicas = ["login", "logout", "registrarUsuario"];
+    const accionesPublicas = ["login", "logout", "registrarUsuario", "reenviarActivacion"];
     if (accionesPublicas.includes(req.event)) return;
 
     // Obtener token del header
@@ -333,8 +334,7 @@ module.exports = cds.service.impl(async function () {
         "ID",
         "username",
         "email",
-        "password",
-        "activo",
+        "password",        
         "nombre",
         "apellido",
         "rol_ID",
@@ -476,7 +476,7 @@ module.exports = cds.service.impl(async function () {
         "username",
         "email",
         "password",
-        "activo",
+        "estado",
         "nombre",
         "apellido",
         "rol_ID",
