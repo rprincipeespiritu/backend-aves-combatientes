@@ -1,7 +1,5 @@
 // server.js
-require("dotenv").config();
 const cds = require("@sap/cds");
-const cors = require("cors");
 
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || "*",
@@ -11,8 +9,9 @@ const corsOptions = {
 };
 
 cds.on("bootstrap", (app) => {
+  const cors = require("cors");
   app.use(cors(corsOptions));
-  app.options("*", cors(corsOptions)); // preflight
+  app.options("*", cors(corsOptions));
 
   app.get("/activar-cuenta", async (req, res) => {
     try {
