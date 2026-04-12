@@ -4,7 +4,7 @@ const cds = require("@sap/cds");
 const cors = require("cors");
 
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || "http://localhost:8080",
+  origin: process.env.CORS_ORIGIN || "*",
   allowedHeaders: ["Content-Type", "Authorization"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,
