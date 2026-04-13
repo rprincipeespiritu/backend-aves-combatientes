@@ -183,7 +183,12 @@ module.exports = cds.service.impl(async function () {
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
     // El action login no requiere token
-    const accionesPublicas = ["login", "logout", "registrarUsuario", "reenviarActivacion"];
+    const accionesPublicas = [
+      "login",
+      "logout",
+      "registrarUsuario",
+      "reenviarActivacion",
+    ];
     if (accionesPublicas.includes(req.event)) return;
 
     // Obtener token del header
@@ -334,7 +339,7 @@ module.exports = cds.service.impl(async function () {
         "ID",
         "username",
         "email",
-        "password",        
+        "password",
         "nombre",
         "apellido",
         "rol_ID",
@@ -910,17 +915,30 @@ module.exports = cds.service.impl(async function () {
 
   async function enviarCorreoActivacion(email, tokenActivacion) {
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
+      host: process.env.SMTP_HOST || "smtp.gmail.com",
       port: Number(process.env.SMTP_PORT || 587),
       secure: false,
+      family: 4,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
 
     const urlBase = process.env.APP_URL || "http://localhost:8080";
     const linkActivacion = `${urlBase}/activar-cuenta?token=${tokenActivacion}`;
+
+    console.log("SMTP_HOST:", process.env.SMTP_HOST || "smtp.gmail.com");
+    console.log("SMTP_PORT:", process.env.SMTP_PORT || 587);
+    console.log("SMTP_USER:", process.env.SMTP_USER);
+    console.log("SMTP_PASS existe:", !!process.env.SMTP_PASS);
+    console.log("APP_URL:", process.env.APP_URL);
+
+    await transporter.verify();
+    console.log("SMTP OK");
 
     await transporter.sendMail({
       from: process.env.MAIL_FROM || process.env.SMTP_USER,
