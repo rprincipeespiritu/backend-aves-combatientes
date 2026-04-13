@@ -363,6 +363,10 @@ entity Usuario : cuid, managed {
     estado             : String(20) default 'PENDIENTE'; // PENDIENTE | ACTIVO | ELIMINADO
     tokenActivacion    : String(255);
     tokenExpiracion    : Timestamp;
+
+    tokenRecuperacion     : String(255);
+    tokenRecuperacionExp  : Timestamp;
+
     ultimoAcceso : DateTime;
 
     // Preferencias
