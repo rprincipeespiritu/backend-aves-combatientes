@@ -901,30 +901,36 @@ module.exports = cds.service.impl(async function () {
       estado: "ACTIVA",
     });
 
-    return SELECT.one.from(Incubaciones).where({ codigo });
+    return SELECT.one.from(Incubaciones).wh|ere({ codigo });
   });
 
   //========================================
   // FUNCIONES AUXILIARES
   //========================================
 
+  const sgMail = require("@sendgrid/mail");
+
   async function enviarCorreoActivacion(email, tokenActivacion) {
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: false,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
+    const apiKey = process.env.SENDGRID_API_KEY;
+    
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+    const appUrl = process.env.APP_URL || "http://localhost:4004";
 
-    const urlBase = process.env.APP_URL || "http://localhost:8080";
-    const linkActivacion = `${urlBase}/activar-cuenta?token=${tokenActivacion}`;
+    if (!apiKey) {
+      throw new Error("Falta SENDGRID_API_KEY");
+    }
 
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM || process.env.SMTP_USER,
+    if (!fromEmail) {
+      throw new Error("Falta SENDGRID_FROM_EMAIL");
+    }
+
+    sgMail.setApiKey(apiKey);
+
+    const linkActivacion = `${appUrl}/activar-cuenta?token=${tokenActivacion}`;
+
+    const msg = {
       to: email,
+      from: fromEmail,
       subject: "Activa tu cuenta",
       html: `
       <h2>Bienvenido</h2>
@@ -933,7 +939,10 @@ module.exports = cds.service.impl(async function () {
       <p><a href="${linkActivacion}">${linkActivacion}</a></p>
       <p>Este enlace vence en 24 horas.</p>
     `,
-    });
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid status:", response.statusCode);
   }
 
   async function construirArbolGenealogico(aveId, generaciones) {
