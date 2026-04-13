@@ -17,14 +17,14 @@ service AveCombatienteService {
         actions {
             action marcarComoVendido(precio: Decimal, comprador: String) returns Aves;
             action marcarComoFallecido(fecha: Date, causa: String)       returns Aves;
-            action generarArbolGenealogico()                             returns LargeString; // JSON del árbol     
+            action generarArbolGenealogico()                             returns LargeString; // JSON del árbol
         };
 
-    action eliminarAve(aveId: String) returns {
+    action   eliminarAve(aveId: String)                                                                                                                 returns {
         success : Boolean;
         message : String;
     };
-    
+
     ////@odata.draft.enabled
     @cds.redirection.target
     entity Pesajes             as projection on combatiente.Pesaje;
@@ -82,7 +82,7 @@ service AveCombatienteService {
     // Vista: Aves activas con estadísticas
     @readonly
     entity AvesActivas         as
-        select from combatiente.Ave 
+        select from combatiente.Ave
         where
             estado <> 'ELIMINADO';
 
@@ -227,7 +227,7 @@ service AveCombatienteService {
         direccion : String;
     };
 
-    action reenviarActivacion( email : String ) returns {
+    action   reenviarActivacion(email: String)                                                                                                          returns {
         success : Boolean;
         message : String;
     };
@@ -253,5 +253,16 @@ service AveCombatienteService {
         descripcion : String;
         activo      : String;
     };
-    
+
+    action   solicitarRecuperacionPassword(email: String)                                                                                               returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   restablecerPassword(token: String,
+                                 newPassword: String)                                                                                                   returns {
+        success : Boolean;
+        message : String;
+    };
+
 }

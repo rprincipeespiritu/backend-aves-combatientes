@@ -182,7 +182,14 @@ module.exports = cds.service.impl(async function () {
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
     // El action login no requiere token
-    const accionesPublicas = ["login", "logout", "registrarUsuario", "reenviarActivacion"];
+    const accionesPublicas = [
+      "login",
+      "logout",
+      "registrarUsuario",
+      "reenviarActivacion",
+      "solicitarRecuperacionPassword",
+      "restablecerPassword"
+    ];
     if (accionesPublicas.includes(req.event)) return;
 
     // Obtener token del header
@@ -333,7 +340,7 @@ module.exports = cds.service.impl(async function () {
         "ID",
         "username",
         "email",
-        "password",        
+        "password",
         "nombre",
         "apellido",
         "rol_ID",
@@ -900,7 +907,7 @@ module.exports = cds.service.impl(async function () {
       estado: "ACTIVA",
     });
 
-    return SELECT.one.from(Incubaciones).wh|ere({ codigo });
+    return SELECT.one.from(Incubaciones).wh | ere({ codigo });
   });
 
   //========================================
@@ -909,7 +916,7 @@ module.exports = cds.service.impl(async function () {
 
   async function enviarCorreoActivacion(email, tokenActivacion) {
     const apiKey = process.env.SENDGRID_API_KEY;
-    
+
     const fromEmail = process.env.SENDGRID_FROM_EMAIL;
     const appUrl = process.env.APP_URL || "http://localhost:4004";
 
@@ -1006,4 +1013,151 @@ module.exports = cds.service.impl(async function () {
       return req.reject(500, error.message);
     }
   });
+
+  this.on("solicitarRecuperacionPassword", async (req) => {
+    try {
+      const { email } = req.data;
+
+      if (!email) {
+        return req.error(400, "El email es requerido");
+      }
+
+      const db = await cds.connect.to("db");
+      const { Usuario } = cds.entities("ave.combatiente");
+
+      const emailNormalizado = email.trim().toLowerCase();
+
+      const user = await db.run(
+        SELECT.one
+          .from(Usuario)
+          .columns("ID", "email", "nombre", "apellido", "estado")
+          .where({ email: emailNormalizado }),
+      );
+
+      // Por seguridad no reveles si existe o no
+      if (!user) {
+        return {
+          success: true,
+          message:
+            "Si el correo existe, se enviará un enlace para restablecer la contraseña.",
+        };
+      }
+
+      const tokenRecuperacion = crypto.randomBytes(32).toString("hex");
+      const tokenRecuperacionExp = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+
+      await db.run(
+        UPDATE(Usuario)
+          .set({
+            tokenRecuperacion,
+            tokenRecuperacionExp,
+          })
+          .where({ ID: user.ID }),
+      );
+
+      try {
+        await enviarCorreoRecuperacion(emailNormalizado, tokenRecuperacion);
+      } catch (mailError) {
+        console.error("Error enviando correo de recuperación:", mailError);
+      }
+
+      return {
+        success: true,
+        message:
+          "Si el correo existe, se enviará un enlace para restablecer la contraseña.",
+      };
+    } catch (error) {
+      console.error("Error en solicitarRecuperacionPassword:", error);
+      return req.error(500, "Error interno al procesar la solicitud");
+    }
+  });
+
+  this.on("restablecerPassword", async (req) => {
+    try {
+      const { token, newPassword } = req.data;
+
+      if (!token || !newPassword) {
+        return req.error(400, "Token y nueva contraseña son requeridos");
+      }
+
+      if (newPassword.length < 6) {
+        return req.error(
+          400,
+          "La nueva contraseña debe tener al menos 6 caracteres",
+        );
+      }
+
+      const db = await cds.connect.to("db");
+      const { Usuario } = cds.entities("ave.combatiente");
+
+      const user = await db.run(
+        SELECT.one
+          .from(Usuario)
+          .columns("ID", "tokenRecuperacionExp")
+          .where({ tokenRecuperacion: token }),
+      );
+
+      if (!user) {
+        return req.error(400, "El enlace no es válido");
+      }
+
+      if (
+        !user.tokenRecuperacionExp ||
+        new Date(user.tokenRecuperacionExp) < new Date()
+      ) {
+        return req.error(400, "El enlace ha expirado");
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      await db.run(
+        UPDATE(Usuario)
+          .set({
+            password: passwordHash,
+            tokenRecuperacion: null,
+            tokenRecuperacionExp: null,
+          })
+          .where({ ID: user.ID }),
+      );
+
+      return {
+        success: true,
+        message: "La contraseña se actualizó correctamente",
+      };
+    } catch (error) {
+      console.error("Error en restablecerPassword:", error);
+      return req.error(500, "Error interno al restablecer la contraseña");
+    }
+  });
+
+  async function enviarCorreoRecuperacion(email, tokenRecuperacion) {
+    const apiKey = process.env.SENDGRID_API_KEY;
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+    const frontendUrl =
+      process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+
+    if (!apiKey) throw new Error("Falta SENDGRID_API_KEY");
+    if (!fromEmail) throw new Error("Falta SENDGRID_FROM_EMAIL");
+
+    sgMail.setApiKey(apiKey);
+
+    const link = `${frontendUrl}#/reset-password/${tokenRecuperacion}`;
+
+    const msg = {
+      to: email,
+      from: fromEmail,
+      subject: "Recupera tu contraseña",
+      html: `
+      <h2>Recuperación de contraseña</h2>
+      <p>Recibimos una solicitud para restablecer tu contraseña.</p>
+      <p>Haz clic en el siguiente enlace:</p>
+      <p><a href="${link}">${link}</a></p>
+      <p>Este enlace vence en 1 hora.</p>
+      <p>Si no solicitaste este cambio, ignora este correo.</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid reset status:", response.statusCode);
+  }
 });
