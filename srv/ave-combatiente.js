@@ -2,6 +2,7 @@ const cds = require("@sap/cds");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const sgMail = require("@sendgrid/mail");
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
@@ -911,13 +912,11 @@ module.exports = cds.service.impl(async function () {
 
   //========================================
   // FUNCIONES AUXILIARES
-  //========================================
-
-  const sgMail = require("@sendgrid/mail");
+  //========================================  
 
   async function enviarCorreoActivacion(email, tokenActivacion) {
     const apiKey = process.env.SENDGRID_API_KEY;
-    
+
     const fromEmail = process.env.SENDGRID_FROM_EMAIL;
     const appUrl = process.env.APP_URL || "http://localhost:4004";
 
