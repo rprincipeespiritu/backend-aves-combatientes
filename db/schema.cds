@@ -196,42 +196,37 @@ entity FotoPelea : cuid, managed {
 //============================================
 
 entity Incubacion : cuid, managed {
-    codigo                  : String(20) @mandatory;
-    ave                     : Association to Ave;
+    codigo             : String(20) @mandatory;
+
     // Padres
-    padre                   : Association to Ave;
-    madre                   : Association to Ave;
+    padre              : Association to Ave;
+    madre              : Association to Ave;
 
     // Fechas
-    fechaIncubacion         : Date       @mandatory;
-    fechaEclosion           : Date;
-    fechaFinalizacion       : Date;
+    fechaIncubacion    : Date       @mandatory;
+    fechaPreNacimiento : Date;
+    fechaEclosion      : Date;
 
     // Huevos
-    totalHuevos             : Integer;
-    huevosFertiles          : Integer;
-    huevosEclosionados      : Integer;
-    huevosNoFertiles        : Integer;
+    totalHuevos        : Integer default 0;
+    huevosFertiles     : Integer default 0;
+    huevosEclosionados : Integer default 0;
+    huevosNoFertiles   : Integer default 0;
 
     // Condiciones
-    temperatura             : Decimal(4, 2);
-    humedad                 : Decimal(5, 2);
-
-    // Resultados
-    polluelosNacidos        : Integer;
-    polluelosSobrevivientes : Integer;
+    temperatura        : Decimal(4, 2);
+    humedad            : Decimal(5, 2);
 
     // Estado
-    estado                  : String(20) @assert.enum: {
-        ACTIVA,
+    estado             : String(20) @assert.enum: {
+        PROGRAMADA,
+        EN_PROCESO,
         COMPLETADA,
         CANCELADA
     };
-    observaciones           : LargeString;
+    observaciones      : LargeString;
+    usuario            : Association to Usuario;
 
-    // Polluelos generados
-    polluelos               : Association to many Ave
-                                  on polluelos.incubacion = $self;
 }
 
 // Extender Ave para incluir incubación
@@ -348,31 +343,31 @@ entity DocumentoAve : cuid, managed {
 //============================================
 
 entity Usuario : cuid, managed {
-    username     : String(50) @mandatory;
-    email        : String(100);
-    password     : String(500); // hash bcrypt
-    nombre       : String(100);
-    apellido     : String(200);
-    telefono     : String(20);
-    direccion    : String(300);
+    username             : String(50) @mandatory;
+    email                : String(100);
+    password             : String(500); // hash bcrypt
+    nombre               : String(100);
+    apellido             : String(200);
+    telefono             : String(20);
+    direccion            : String(300);
 
     // Rol
-    rol          : Association to Rol;
+    rol                  : Association to Rol;
 
     // Estado
-    estado             : String(20) default 'PENDIENTE'; // PENDIENTE | ACTIVO | ELIMINADO
-    tokenActivacion    : String(255);
-    tokenExpiracion    : Timestamp;
+    estado               : String(20) default 'PENDIENTE'; // PENDIENTE | ACTIVO | ELIMINADO
+    tokenActivacion      : String(255);
+    tokenExpiracion      : Timestamp;
 
-    tokenRecuperacion     : String(255);
-    tokenRecuperacionExp  : Timestamp;
+    tokenRecuperacion    : String(255);
+    tokenRecuperacionExp : Timestamp;
 
-    ultimoAcceso : DateTime;
+    ultimoAcceso         : DateTime;
 
     // Preferencias
-    preferencias : LargeString; // JSON
-    aves         : Association to many Ave
-                       on aves.usuario = $self;
+    preferencias         : LargeString; // JSON
+    aves                 : Association to many Ave
+                               on aves.usuario = $self;
 }
 
 entity Rol : cuid {

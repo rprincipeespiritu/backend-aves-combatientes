@@ -34,7 +34,16 @@ service AveCombatienteService {
 
     //@odata.draft.enabled
     @cds.redirection.target
-    entity Incubaciones        as projection on combatiente.Incubacion;
+    entity Incubaciones        as projection on combatiente.Incubacion
+        actions {
+            action iniciar()                      returns String;
+            action finalizar(cantidadFertiles: Integer,
+                             cantidadNacidos: Integer,
+                             cantidadNoEclosion: Integer,
+                             observacion: String) returns String;
+
+            action cancelar(observacion: String)  returns String;
+        };
 
     //@odata.draft.enabled
     entity Tratamientos        as projection on combatiente.Tratamiento;
