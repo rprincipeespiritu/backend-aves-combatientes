@@ -190,7 +190,7 @@ module.exports = cds.service.impl(async function () {
       "registrarUsuario",
       "reenviarActivacion",
       "solicitarRecuperacionPassword",
-      "restablecerPassword"
+      "restablecerPassword",
     ];
     if (accionesPublicas.includes(req.event)) return;
 
@@ -624,6 +624,264 @@ module.exports = cds.service.impl(async function () {
         (hoy - nacimiento) / (365.25 * 24 * 60 * 60 * 1000),
       );
     }
+  });
+
+  this.before("CREATE", "Incubaciones", async (req) => {
+    const data = req.data;
+
+    if (!data.fechaInicio) {
+      return req.error(400, "La fecha de inicio es obligatoria");
+    }
+
+    if (!data.padre_ID) {
+      return req.error(400, "El padre es obligatorio");
+    }
+
+    if (!data.madre_ID) {
+      return req.error(400, "La madre es obligatoria");
+    }
+
+    if (data.padre_ID === data.madre_ID) {
+      return req.error(
+        400,
+        "El padre y la madre no pueden ser el mismo registro",
+      );
+    }
+
+    if ((data.cantidadHuevos ?? 0) < 0) {
+      return req.error(400, "La cantidad de huevos no puede ser negativa");
+    }
+
+    if ((data.cantidadFertiles ?? 0) < 0) {
+      return req.error(400, "La cantidad de fértiles no puede ser negativa");
+    }
+
+    if ((data.cantidadNacidos ?? 0) < 0) {
+      return req.error(400, "La cantidad de nacidos no puede ser negativa");
+    }
+
+    if ((data.cantidadNoEclosion ?? 0) < 0) {
+      return req.error(
+        400,
+        "La cantidad de no eclosionados no puede ser negativa",
+      );
+    }
+
+    if ((data.cantidadFertiles ?? 0) > (data.cantidadHuevos ?? 0)) {
+      return req.error(
+        400,
+        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
+      );
+    }
+
+    if ((data.cantidadNacidos ?? 0) > (data.cantidadFertiles ?? 0)) {
+      return req.error(
+        400,
+        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
+      );
+    }
+
+    if (!data.estado) {
+      data.estado = "PROGRAMADA";
+    }
+
+    if (!data.codigo) {
+      const rows = await db.run(SELECT.from(Incubaciones).columns("ID"));
+
+      const correlativo = String((rows?.length || 0) + 1).padStart(5, "0");
+      data.codigo = `INC-${correlativo}`;
+    }
+  });
+
+  this.before("UPDATE", "Incubaciones", async (req) => {
+    const data = req.data;
+
+    if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
+      return req.error(
+        400,
+        "El padre y la madre no pueden ser el mismo registro",
+      );
+    }
+
+    const actual = await db.run(
+      SELECT.one
+        .from(Incubaciones)
+        .where({ ID: req.data.ID || req.params?.[0]?.ID }),
+    );
+
+    if (!actual) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (actual.estado === "FINALIZADA" || actual.estado === "CANCELADA") {
+      return req.error(
+        400,
+        "No se puede modificar una incubación finalizada o cancelada",
+      );
+    }
+
+    const cantidadHuevos = data.cantidadHuevos ?? actual.cantidadHuevos ?? 0;
+    const cantidadFertiles =
+      data.cantidadFertiles ?? actual.cantidadFertiles ?? 0;
+    const cantidadNacidos = data.cantidadNacidos ?? actual.cantidadNacidos ?? 0;
+    const cantidadNoEclosion =
+      data.cantidadNoEclosion ?? actual.cantidadNoEclosion ?? 0;
+
+    if (
+      cantidadHuevos < 0 ||
+      cantidadFertiles < 0 ||
+      cantidadNacidos < 0 ||
+      cantidadNoEclosion < 0
+    ) {
+      return req.error(400, "Las cantidades no pueden ser negativas");
+    }
+
+    if (cantidadFertiles > cantidadHuevos) {
+      return req.error(
+        400,
+        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
+      );
+    }
+
+    if (cantidadNacidos > cantidadFertiles) {
+      return req.error(
+        400,
+        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
+      );
+    }
+  });
+
+  this.before("DELETE", "Incubaciones", async (req) => {
+    const actual = await db.run(
+      SELECT.one.from(Incubaciones).where({ ID: req.params?.[0]?.ID }),
+    );
+
+    if (!actual) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (actual.estado === "EN_PROCESO" || actual.estado === "FINALIZADA") {
+      return req.error(
+        400,
+        "No se puede eliminar una incubación en proceso o finalizada",
+      );
+    }
+  });
+
+  this.on("iniciar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado !== "PROGRAMADA") {
+      return req.error(
+        400,
+        "Solo se puede iniciar una incubación en estado PROGRAMADA",
+      );
+    }
+
+    await db.run(
+      UPDATE(Incubacion).set({ estado: "EN_PROCESO" }).where({ ID: id }),
+    );
+
+    return "Incubación iniciada correctamente";
+  });
+
+  this.on("finalizar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+    const {
+      cantidadFertiles,
+      cantidadNacidos,
+      cantidadNoEclosion,
+      observacion,
+    } = req.data;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado !== "EN_PROCESO") {
+      return req.error(
+        400,
+        "Solo se puede finalizar una incubación en estado EN_PROCESO",
+      );
+    }
+
+    if (cantidadFertiles > incubacion.cantidadHuevos) {
+      return req.error(
+        400,
+        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
+      );
+    }
+
+    if (cantidadNacidos > cantidadFertiles) {
+      return req.error(
+        400,
+        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
+      );
+    }
+
+    await db.run(
+      UPDATE(Incubacion)
+        .set({
+          cantidadFertiles,
+          cantidadNacidos,
+          cantidadNoEclosion,
+          observacion,
+          estado: "FINALIZADA",
+          fechaFinReal: new Date().toISOString().slice(0, 10),
+        })
+        .where({ ID: id }),
+    );
+
+    return "Incubación finalizada correctamente";
+  });
+
+  this.on("cancelar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+    const { observacion } = req.data;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado === "FINALIZADA") {
+      return req.error(400, "No se puede cancelar una incubación finalizada");
+    }
+
+    await db.run(
+      UPDATE(Incubacion)
+        .set({
+          estado: "CANCELADA",
+          observacion,
+        })
+        .where({ ID: id }),
+    );
+
+    return "Incubación cancelada correctamente";
   });
 
   // Validar pesaje
