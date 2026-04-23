@@ -198,20 +198,11 @@ entity FotoPelea : cuid, managed {
 entity Incubacion : cuid, managed {
     codigo             : String(20) @mandatory;
 
-    // Padres
-    padre              : Association to Ave;
-    madre              : Association to Ave;
-
     // Fechas
-    fechaIncubacion    : Date       @mandatory;
-    fechaPreNacimiento : Date;
-    fechaEclosion      : Date;
-
-    // Huevos
-    totalHuevos        : Integer default 0;
-    huevosFertiles     : Integer default 0;
-    huevosEclosionados : Integer default 0;
-    huevosNoFertiles   : Integer default 0;
+    fechaIncubacion    : DateTime   @mandatory;
+    fechaPreNacimiento : DateTime;
+    fechaEclosion      : DateTime;
+    fechaFinIncubacion : DateTime;
 
     // Condiciones
     temperatura        : Decimal(4, 2);
@@ -222,11 +213,29 @@ entity Incubacion : cuid, managed {
         PROGRAMADA,
         EN_PROCESO,
         COMPLETADA,
-        CANCELADA
+        CANCELADA,
+        ELIMINADO
     };
     observaciones      : LargeString;
     usuario            : Association to Usuario;
 
+    motivoCancelacion  : String(500);
+
+    detalles           : Composition of many IncubacionDetalle
+                             on detalles.incubacion = $self;
+
+}
+
+entity IncubacionDetalle : cuid, managed {
+    incubacion           : Association to Incubacion @mandatory;
+
+    padre                : Association to Ave        @mandatory;
+    madre                : Association to Ave        @mandatory;
+
+    totalHuevos          : Integer default 0;
+    huevosFertiles       : Integer default 0;
+    huevosEclosionados   : Integer default 0;
+    huevosNoEclosionados : Integer default 0;
 }
 
 // Extender Ave para incluir incubación
