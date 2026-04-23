@@ -742,10 +742,10 @@ module.exports = cds.service.impl(async function () {
 
     const id = req.params[0]?.ID;
     const { observacion } = req.data;
-   
+
     if (!id) {
       return req.error(400, "ID de incubación requerido");
-    }   
+    }
 
     const incubacion = await db.run(
       SELECT.one.from(Incubacion).where({ ID: id })
@@ -779,7 +779,7 @@ module.exports = cds.service.impl(async function () {
 
     if (!detalles || detalles.length === 0) {
       return req.error(400, "La incubación no tiene detalles");
-    }    
+    }
 
     await db.run(
       UPDATE(Incubacion)
@@ -1361,4 +1361,37 @@ module.exports = cds.service.impl(async function () {
     const [response] = await sgMail.send(msg);
     console.log("SendGrid reset status:", response.statusCode);
   }
+
+  this.on("obtenerDashboard", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Aves, Incubaciones, IncubacionDetalles } = this.entities;
+
+    const totalAves = await SELECT.from(Aves).columns("count(*) as total");
+    const totalIncubaciones = await SELECT.from(Incubaciones).where(`estado != 'ELIMINADO'`).columns("count(*) as total");
+    const incubacionesActivas = await SELECT.from(Incubaciones).where({ estado: "EN_PROCESO" }).columns("count(*) as total");
+    const incubacionesProgramadas = await SELECT.from(Incubaciones).where({ estado: "PROGRAMADA" }).columns("count(*) as total");
+    const totalAvesActivas = await SELECT.from(Aves).where({ estado: "ACTIVO" }).columns("count(*) as total");
+    const totalNacidosRes = await SELECT.from(IncubacionDetalles).columns("sum(huevosEclosionados) as total");
+
+    const recientes = await SELECT.from(Incubaciones)
+      .where(`estado != 'ELIMINADO'`)
+      .columns("ID", "codigo", "estado", "fechaIncubacion")
+      .orderBy("createdAt desc")
+      .limit(5);
+
+    const iActivas = incubacionesActivas?.[0]?.total || 0;
+    const iProgramadas = incubacionesProgramadas?.[0]?.total || 0;
+
+    return {
+      totalAves: totalAves?.[0]?.total || 0,
+      totalIncubaciones: totalIncubaciones?.[0]?.total || 0,
+      incubacionesActivas: iActivas,
+      incubacionesProgramadas: iProgramadas,
+      totalAvesActivas: totalAvesActivas?.[0]?.total || 0,
+      totalNacidos: totalNacidosRes?.[0]?.total || 0,
+      alertaIncubaciones: iProgramadas > 0 ? `Tienes ${iProgramadas} incubaciones programadas.` : "",
+      alertaEclosion: iActivas > 0 ? `Tienes ${iActivas} incubaciones en proceso.` : "",
+      incubacionesRecientes: recientes || []
+    };
+  });
 });

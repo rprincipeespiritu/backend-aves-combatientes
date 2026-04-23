@@ -273,4 +273,21 @@ service AveCombatienteService {
         message : String;
     };
 
+    action   obtenerDashboard()                                                                                                                         returns {
+        totalAves               : Integer;
+        totalIncubaciones       : Integer;
+        incubacionesActivas     : Integer;
+        incubacionesProgramadas : Integer;
+        totalAvesActivas        : Integer;
+        totalNacidos            : Integer;
+        alertaIncubaciones      : String;
+        alertaEclosion          : String;
+        incubacionesRecientes   : many {
+            ID              : UUID;
+            codigo          : String;
+            estado          : String;
+            fechaIncubacion : Timestamp;
+        };
+    };
+
 }
