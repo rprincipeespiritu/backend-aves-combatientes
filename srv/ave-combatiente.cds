@@ -45,6 +45,8 @@ service AveCombatienteService {
             action cancelar(observacion: String)  returns String;
         };
 
+    entity IncubacionDetalles  as projection on combatiente.IncubacionDetalle;
+
     //@odata.draft.enabled
     entity Tratamientos        as projection on combatiente.Tratamiento;
 
@@ -88,6 +90,12 @@ service AveCombatienteService {
     // VISTAS Y REPORTES
     //========================================
 
+    @readonly
+    entity IncubacionesActivas as
+        select from combatiente.Incubacion
+        where
+            estado <> 'ELIMINADO';
+
     // Vista: Aves activas con estadísticas
     @readonly
     entity AvesActivas         as
@@ -117,15 +125,6 @@ service AveCombatienteService {
             placa,
             nombre;
 
-    // Vista: Resumen de incubaciones
-    @readonly
-    entity ResumenIncubaciones as
-        select from combatiente.Incubacion {
-            *,
-            padre.placa                                                     as placaPadre,
-            madre.placa                                                     as placaMadre,
-            cast ( huevosEclosionados as Decimal(5, 2)) / totalHuevos * 100 as tasaEclosion : Decimal(5, 2)
-        };
 
     // Vista: Evolución de peso por ave
     @readonly

@@ -18,7 +18,7 @@ const PERMISOS_ROL = {
     Aves: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
-    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
     Tratamientos: ["READ", "CREATE", "UPDATE", "DELETE"],
     Alimentaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
     Transacciones: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -174,6 +174,7 @@ module.exports = cds.service.impl(async function () {
     Pesajes,
     Peleas,
     Incubaciones,
+    IncubacionDetalles,
     HistorialCambios,
     FotosAve,
     Transacciones,
@@ -626,145 +627,75 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
-  this.before("CREATE", "Incubaciones", async (req) => {
+  function validarNumeros(data) {
+    const totalHuevos = Number(data.totalHuevos || 0);
+    const fertiles = Number(data.huevosFertiles || 0);
+    const nacidos = Number(data.huevosEclosionados || 0);
+    const noEclosionados = Number(data.huevosNoEclosionados || 0);
+
+    if (totalHuevos < 0 || fertiles < 0 || nacidos < 0 || noEclosionados < 0) {
+      req.reject(400, 'Los valores numéricos no pueden ser negativos');
+    }
+
+    if (fertiles > totalHuevos) {
+      throw new Error('La cantidad de fértiles no puede ser mayor al total de huevos');
+    }
+
+    if (nacidos > fertiles) {
+      throw new Error('La cantidad de nacidos no puede ser mayor a los fértiles');
+    }
+
+    if ((nacidos + noEclosionados) > fertiles) {
+      throw new Error('Nacidos + No eclosionados no puede ser mayor a fértiles');
+    }
+  }
+
+  this.before(['CREATE', 'UPDATE'], IncubacionDetalles, async (req) => {
     const data = req.data;
 
-    if (!data.fechaInicio) {
-      return req.error(400, "La fecha de inicio es obligatoria");
+    const totalHuevos = Number(data.totalHuevos || 0);
+    const fertiles = Number(data.huevosFertiles || 0);
+    const nacidos = Number(data.huevosEclosionados || 0);
+    const noEclosionados = Number(data.huevosNoEclosionados || 0);
+
+    if (totalHuevos < 0 || fertiles < 0 || nacidos < 0 || noEclosionados < 0) {
+      return req.reject(400, 'Los valores numéricos no pueden ser negativos');
     }
 
-    if (!data.padre_ID) {
-      return req.error(400, "El padre es obligatorio");
+    if (fertiles > totalHuevos) {
+      return req.reject(400, 'La cantidad de fértiles no puede ser mayor al total de huevos');
     }
 
-    if (!data.madre_ID) {
-      return req.error(400, "La madre es obligatoria");
+    if (nacidos > fertiles) {
+      return req.reject(400, 'La cantidad de nacidos no puede ser mayor a los fértiles');
     }
 
-    if (data.padre_ID === data.madre_ID) {
-      return req.error(
-        400,
-        "El padre y la madre no pueden ser el mismo registro",
-      );
+    if ((nacidos + noEclosionados) > fertiles) {
+      return req.reject(400, 'Nacidos + No eclosionados no puede ser mayor a fértiles');
     }
-
-    if ((data.cantidadHuevos ?? 0) < 0) {
-      return req.error(400, "La cantidad de huevos no puede ser negativa");
-    }
-
-    if ((data.cantidadFertiles ?? 0) < 0) {
-      return req.error(400, "La cantidad de fértiles no puede ser negativa");
-    }
-
-    if ((data.cantidadNacidos ?? 0) < 0) {
-      return req.error(400, "La cantidad de nacidos no puede ser negativa");
-    }
-
-    if ((data.cantidadNoEclosion ?? 0) < 0) {
-      return req.error(
-        400,
-        "La cantidad de no eclosionados no puede ser negativa",
-      );
-    }
-
-    if ((data.cantidadFertiles ?? 0) > (data.cantidadHuevos ?? 0)) {
-      return req.error(
-        400,
-        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
-      );
-    }
-
-    if ((data.cantidadNacidos ?? 0) > (data.cantidadFertiles ?? 0)) {
-      return req.error(
-        400,
-        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
-      );
-    }
-
-    if (!data.estado) {
-      data.estado = "PROGRAMADA";
-    }
-
-    if (!data.codigo) {
-      const rows = await db.run(SELECT.from(Incubaciones).columns("ID"));
-
-      const correlativo = String((rows?.length || 0) + 1).padStart(5, "0");
-      data.codigo = `INC-${correlativo}`;
-    }
-  });
-
-  this.before("UPDATE", "Incubaciones", async (req) => {
-    const data = req.data;
 
     if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
-      return req.error(
-        400,
-        "El padre y la madre no pueden ser el mismo registro",
-      );
-    }
-
-    const actual = await db.run(
-      SELECT.one
-        .from(Incubaciones)
-        .where({ ID: req.data.ID || req.params?.[0]?.ID }),
-    );
-
-    if (!actual) {
-      return req.error(404, "Incubación no encontrada");
-    }
-
-    if (actual.estado === "FINALIZADA" || actual.estado === "CANCELADA") {
-      return req.error(
-        400,
-        "No se puede modificar una incubación finalizada o cancelada",
-      );
-    }
-
-    const cantidadHuevos = data.cantidadHuevos ?? actual.cantidadHuevos ?? 0;
-    const cantidadFertiles =
-      data.cantidadFertiles ?? actual.cantidadFertiles ?? 0;
-    const cantidadNacidos = data.cantidadNacidos ?? actual.cantidadNacidos ?? 0;
-    const cantidadNoEclosion =
-      data.cantidadNoEclosion ?? actual.cantidadNoEclosion ?? 0;
-
-    if (
-      cantidadHuevos < 0 ||
-      cantidadFertiles < 0 ||
-      cantidadNacidos < 0 ||
-      cantidadNoEclosion < 0
-    ) {
-      return req.error(400, "Las cantidades no pueden ser negativas");
-    }
-
-    if (cantidadFertiles > cantidadHuevos) {
-      return req.error(
-        400,
-        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
-      );
-    }
-
-    if (cantidadNacidos > cantidadFertiles) {
-      return req.error(
-        400,
-        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
-      );
+      return req.reject(400, 'El padre y la madre no pueden ser la misma ave');
     }
   });
 
-  this.before("DELETE", "Incubaciones", async (req) => {
-    const actual = await db.run(
-      SELECT.one.from(Incubaciones).where({ ID: req.params?.[0]?.ID }),
-    );
+  this.before(['CREATE', 'UPDATE'], Incubaciones, async (req) => {
+    const data = req.data;
 
-    if (!actual) {
-      return req.error(404, "Incubación no encontrada");
-    }
+    if (data.fechaIncubacion) {
+      const fechaIncubacion = new Date(data.fechaIncubacion);
 
-    if (actual.estado === "EN_PROCESO" || actual.estado === "FINALIZADA") {
-      return req.error(
-        400,
-        "No se puede eliminar una incubación en proceso o finalizada",
-      );
+      if (!data.fechaPreNacimiento) {
+        const pre = new Date(fechaIncubacion);
+        pre.setDate(pre.getDate() + 18);
+        data.fechaPreNacimiento = pre.toISOString();
+      }
+
+      if (!data.fechaEclosion) {
+        const eco = new Date(fechaIncubacion);
+        eco.setDate(eco.getDate() + 21);
+        data.fechaEclosion = eco.toISOString();
+      }
     }
   });
 
@@ -789,6 +720,17 @@ module.exports = cds.service.impl(async function () {
       );
     }
 
+    // VALIDACIÓN CLAVE
+    const ahora = new Date();
+    const fechaIncubacion = new Date(incubacion.fechaIncubacion);
+
+    if (fechaIncubacion > ahora) {
+      return req.error(
+        400,
+        "No se puede iniciar la incubación porque la fecha de incubación es mayor a la fecha actual"
+      );
+    }
+
     await db.run(
       UPDATE(Incubacion).set({ estado: "EN_PROCESO" }).where({ ID: id }),
     );
@@ -798,18 +740,17 @@ module.exports = cds.service.impl(async function () {
 
   this.on("finalizar", "Incubaciones", async (req) => {
     const db = await cds.connect.to("db");
-    const { Incubacion } = cds.entities("ave.combatiente");
+    const { Incubacion, IncubacionDetalle } = cds.entities("ave.combatiente");
 
     const id = req.params[0]?.ID;
-    const {
-      cantidadFertiles,
-      cantidadNacidos,
-      cantidadNoEclosion,
-      observacion,
-    } = req.data;
+    const { observacion } = req.data;
+   
+    if (!id) {
+      return req.error(400, "ID de incubación requerido");
+    }   
 
     const incubacion = await db.run(
-      SELECT.one.from(Incubacion).where({ ID: id }),
+      SELECT.one.from(Incubacion).where({ ID: id })
     );
 
     if (!incubacion) {
@@ -819,35 +760,37 @@ module.exports = cds.service.impl(async function () {
     if (incubacion.estado !== "EN_PROCESO") {
       return req.error(
         400,
-        "Solo se puede finalizar una incubación en estado EN_PROCESO",
+        "Solo se puede finalizar una incubación en estado EN_PROCESO"
       );
     }
 
-    if (cantidadFertiles > incubacion.cantidadHuevos) {
+    // VALIDACIÓN CLAVE
+    const ahora = new Date();
+    const fechaEclosion = new Date(incubacion.fechaEclosion);
+
+    if (fechaEclosion > ahora) {
       return req.error(
         400,
-        "La cantidad de fértiles no puede ser mayor a la cantidad de huevos",
+        "No se puede finalizar la incubación porque la fecha de eclosión es mayor a la fecha actual"
       );
     }
 
-    if (cantidadNacidos > cantidadFertiles) {
-      return req.error(
-        400,
-        "La cantidad de nacidos no puede ser mayor a la cantidad de fértiles",
-      );
-    }
+    const detalles = await db.run(
+      SELECT.from(IncubacionDetalle).where({ incubacion_ID: id })
+    );
+
+    if (!detalles || detalles.length === 0) {
+      return req.error(400, "La incubación no tiene detalles");
+    }    
 
     await db.run(
       UPDATE(Incubacion)
         .set({
-          cantidadFertiles,
-          cantidadNacidos,
-          cantidadNoEclosion,
-          observacion,
-          estado: "FINALIZADA",
-          fechaFinReal: new Date().toISOString().slice(0, 10),
+          observaciones: observacion,
+          estado: "COMPLETADA",
+          fechaFinIncubacion: new Date().toISOString()
         })
-        .where({ ID: id }),
+        .where({ ID: id })
     );
 
     return "Incubación finalizada correctamente";
@@ -868,7 +811,7 @@ module.exports = cds.service.impl(async function () {
       return req.error(404, "Incubación no encontrada");
     }
 
-    if (incubacion.estado === "FINALIZADA") {
+    if (incubacion.estado === "COMPLETADA") {
       return req.error(400, "No se puede cancelar una incubación finalizada");
     }
 
@@ -876,7 +819,7 @@ module.exports = cds.service.impl(async function () {
       UPDATE(Incubacion)
         .set({
           estado: "CANCELADA",
-          observacion,
+          motivoCancelacion: observacion,
         })
         .where({ ID: id }),
     );
@@ -1090,9 +1033,9 @@ module.exports = cds.service.impl(async function () {
 
     const edadMeses = ave.fechaNacimiento
       ? Math.floor(
-          (new Date() - new Date(ave.fechaNacimiento)) /
-            (30 * 24 * 60 * 60 * 1000),
-        )
+        (new Date() - new Date(ave.fechaNacimiento)) /
+        (30 * 24 * 60 * 60 * 1000),
+      )
       : 0;
 
     return {
