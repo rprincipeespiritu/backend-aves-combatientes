@@ -38,7 +38,7 @@ entity TipoAve : cuid {
 
 entity Ave : cuid, managed {
     // Identificación
-    placa              : String(20)             @mandatory; // Placa única
+    placa              : String(20)              @mandatory; // Placa única
     nombre             : String(100);
     apodo              : String(50);
 
@@ -46,7 +46,7 @@ entity Ave : cuid, managed {
     raza               : String(250);
     color              : String(250);
     tipoAve            : String(250);
-    sexo               : String(1)              @assert.enum: {
+    sexo               : String(1)               @assert.enum: {
         M,
         H
     }; // Macho/Hembra
@@ -72,7 +72,7 @@ entity Ave : cuid, managed {
     observaciones      : LargeString;
 
     // Estado
-    estado             : String(20)             @assert.enum: {
+    estado             : String(20)              @assert.enum: {
         ACTIVO,
         VENDIDO,
         PRESTADO,
@@ -80,12 +80,12 @@ entity Ave : cuid, managed {
         FALLECIDO,
         ELIMINADO
     };
-    categoria          : String(20)             @assert.enum: {
+    categoria          : String(20)              @assert.enum: {
         BUENO,
         EXCELENTE,
         EXTRAORDINARIO
     };
-    cruce              : String(20)             @assert.enum: {
+    cruce              : String(20)              @assert.enum: {
         ABIERTO,
         INBREEDING
     };
@@ -105,7 +105,8 @@ entity Ave : cuid, managed {
                              on videos.ave = $self;
     documentos         : Composition of many DocumentoAve
                              on documentos.ave = $self;
-    usuario            : Association to Usuario @mandatory;
+    usuario            : Association to Usuario  @mandatory;
+    linea              : Association to LineaAve @mandatory;
 
     // SharePoint
     sharepointFolderId : String(200);
@@ -196,10 +197,10 @@ entity FotoPelea : cuid, managed {
 //============================================
 
 entity Incubacion : cuid, managed {
-    codigo             : String(20) @mandatory;
+    codigo             : String(20)             @mandatory;
 
     // Fechas
-    fechaIncubacion    : DateTime   @mandatory;
+    fechaIncubacion    : DateTime               @mandatory;
     fechaPreNacimiento : DateTime;
     fechaEclosion      : DateTime;
     fechaFinIncubacion : DateTime;
@@ -209,7 +210,7 @@ entity Incubacion : cuid, managed {
     humedad            : Decimal(5, 2);
 
     // Estado
-    estado             : String(20) @assert.enum: {
+    estado             : String(20)             @assert.enum: {
         PROGRAMADA,
         EN_PROCESO,
         COMPLETADA,
@@ -217,12 +218,13 @@ entity Incubacion : cuid, managed {
         ELIMINADO
     };
     observaciones      : LargeString;
-    usuario            : Association to Usuario;
 
     motivoCancelacion  : String(500);
 
     detalles           : Composition of many IncubacionDetalle
                              on detalles.incubacion = $self;
+
+    usuario            : Association to Usuario @mandatory;
 
 }
 
@@ -236,6 +238,9 @@ entity IncubacionDetalle : cuid, managed {
     huevosFertiles       : Integer default 0;
     huevosEclosionados   : Integer default 0;
     huevosNoEclosionados : Integer default 0;
+
+    usuario              : Association to Usuario    @mandatory;
+
 }
 
 // Extender Ave para incluir incubación
@@ -377,6 +382,18 @@ entity Usuario : cuid, managed {
     preferencias         : LargeString; // JSON
     aves                 : Association to many Ave
                                on aves.usuario = $self;
+
+    incubaciones         : Association to many Incubacion
+                               on incubaciones.usuario = $self;
+
+    lineas               : Association to many LineaAve
+                               on lineas.usuario = $self;
+
+    cruces               : Association to many PlanCruce
+                               on cruces.usuario = $self;
+
+    IncubacionesDetalle  : Association to many IncubacionDetalle
+                               on IncubacionesDetalle.usuario = $self;
 }
 
 entity Rol : cuid {
@@ -404,4 +421,46 @@ entity HistorialCambios : cuid, managed {
         UPDATE,
         DELETE
     };
+}
+
+entity LineaAve : cuid, managed {
+    nombre       : String(100)                 @mandatory;
+    descripcion  : String(500);
+    objetivo     : String(500);
+
+    estado       : String(20) default 'ACTIVA' @assert.enum: {
+        ACTIVA,
+        INACTIVA,
+        ELIMINADO
+    };
+
+    aveFundador  : Association to Ave;
+    aveFundadora : Association to Ave;
+
+    planes       : Composition of many PlanCruce
+                       on planes.linea = $self;
+    aves         : Association to many Ave
+                       on aves.linea = $self;
+
+    usuario      : Association to Usuario      @mandatory;
+}
+
+entity PlanCruce : cuid, managed {
+    linea          : Association to LineaAve @mandatory;
+
+    macho          : Association to Ave      @mandatory;
+    hembra         : Association to Ave      @mandatory;
+
+    tipoParentesco : String(50);
+    objetivoCruce  : String(500);
+
+    nivelRiesgo    : String(20);
+    porcentaje     : Decimal(5, 2);
+
+    recomendacion  : String(1000);
+    estado         : String(20) default 'PROPUESTO';
+
+    fechaPropuesta : Date;
+
+    usuario        : Association to Usuario  @mandatory;
 }

@@ -17,6 +17,7 @@ const PERMISOS_ROL = {
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
+    Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Tratamientos: ["READ", "CREATE", "UPDATE", "DELETE"],
     Alimentaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
     Transacciones: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -178,6 +179,8 @@ module.exports = cds.service.impl(async function () {
     Transacciones,
     Usuario,
     Rol,
+    LineasAves,
+    PlanesCruces
   } = this.entities;
 
   // Intercepta TODAS las operaciones del servicio
@@ -1187,27 +1190,91 @@ module.exports = cds.service.impl(async function () {
     try {
       console.log("BODY:", req.data);
 
-      const aveId = req.data.aveId;
+      const lineaAveId = req.data.lineaAveId;
 
-      if (!aveId) {
+      if (!lineaAveId) {
         return req.reject(400, "El ID es obligatorio");
       }
 
-      const ave = await SELECT.one.from(Aves).where({ ID: aveId });
+      const ave = await SELECT.one.from(LineaAves).where({ ID: lineaAveId });
 
       if (!ave) {
-        return req.reject(404, "Ave no encontrada");
+        return req.reject(404, "Línea de ave no encontrada");
       }
 
-      await UPDATE(Aves)
+      await UPDATE(LineaAves)
         .set({
           estado: "ELIMINADO",
         })
-        .where({ ID: aveId });
+        .where({ ID: lineaAveId });
 
       return {
         success: true,
-        message: "Ave eliminada correctamente",
+        message: "Línea de ave eliminada correctamente",
+      };
+    } catch (error) {
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
+    }
+  });
+
+  this.on("eliminarLineaAve", async (req) => {
+    try {
+      console.log("BODY:", req.data);
+
+      const lineaAveId = req.data.lineaAveId;
+
+      if (!lineaAveId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
+
+      const ave = await SELECT.one.from(LineaAves).where({ ID: lineaAveId });
+
+      if (!ave) {
+        return req.reject(404, "Línea de ave no encontrada");
+      }
+
+      await UPDATE(LineaAves)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: lineaAveId });
+
+      return {
+        success: true,
+        message: "Línea de ave eliminada correctamente",
+      };
+    } catch (error) {
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
+    }
+  });
+
+  this.on("eliminarIncubacion", async (req) => {
+    try {
+      console.log("BODY:", req.data);
+
+      const incubacionId = req.data.incubacionId;
+
+      if (!incubacionId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
+
+      const ave = await SELECT.one.from(Incubaciones).where({ ID: incubacionId });
+
+      if (!ave) {
+        return req.reject(404, "Incubación no encontrada");
+      }
+
+      await UPDATE(Incubaciones)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: incubacionId });
+
+      return {
+        success: true,
+        message: "Incubación eliminada correctamente",
       };
     } catch (error) {
       console.error("ERROR BACKEND:", error);
@@ -1363,18 +1430,75 @@ module.exports = cds.service.impl(async function () {
   }
 
   this.on("obtenerDashboard", async (req) => {
-    const db = await cds.connect.to("db");
-    const { Aves, Incubaciones, IncubacionDetalles } = this.entities;
+    const { Ave, Incubacion, IncubacionDetalle, LineaAve } =
+      cds.entities("ave.combatiente");
 
-    const totalAves = await SELECT.from(Aves).columns("count(*) as total");
-    const totalIncubaciones = await SELECT.from(Incubaciones).where(`estado != 'ELIMINADO'`).columns("count(*) as total");
-    const incubacionesActivas = await SELECT.from(Incubaciones).where({ estado: "EN_PROCESO" }).columns("count(*) as total");
-    const incubacionesProgramadas = await SELECT.from(Incubaciones).where({ estado: "PROGRAMADA" }).columns("count(*) as total");
-    const totalAvesActivas = await SELECT.from(Aves).where({ estado: "ACTIVO" }).columns("count(*) as total");
-    const totalNacidosRes = await SELECT.from(IncubacionDetalles).columns("sum(huevosEclosionados) as total");
+    console.log("imprimir req: " + JSON.stringify(req));
+    
+    const usuarioId =
+      req.jwtUser?.ID ||
+      req.jwtUser?.id ||
+      req.user?.id;
 
-    const recientes = await SELECT.from(Incubaciones)
-      .where(`estado != 'ELIMINADO'`)
+    console.log("imprimir userId: " + JSON.stringify(usuarioId));
+
+    if (!usuarioId) {
+      return req.reject(401, "No se pudo identificar el usuario logueado.");
+    }
+
+    const totalAves = await SELECT.from(Ave)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const totalIncubaciones = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const incubacionesActivas = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "EN_PROCESO"
+      })
+      .columns("count(*) as total");
+
+    const incubacionesProgramadas = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "PROGRAMADA"
+      })
+      .columns("count(*) as total");
+
+    const totalAvesActivas = await SELECT.from(Ave)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "ACTIVO"
+      })
+      .columns("count(*) as total");
+
+    const totalLineas = await SELECT.from(LineaAve)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADA" }
+      })
+      .columns("count(*) as total");
+
+    const totalNacidosRes = await SELECT.from(IncubacionDetalle)
+      .where({
+        usuario_ID: usuarioId
+      })
+      .columns("sum(huevosEclosionados) as total");
+
+    const recientes = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
       .columns("ID", "codigo", "estado", "fechaIncubacion")
       .orderBy("createdAt desc")
       .limit(5);
@@ -1391,7 +1515,152 @@ module.exports = cds.service.impl(async function () {
       totalNacidos: totalNacidosRes?.[0]?.total || 0,
       alertaIncubaciones: iProgramadas > 0 ? `Tienes ${iProgramadas} incubaciones programadas.` : "",
       alertaEclosion: iActivas > 0 ? `Tienes ${iActivas} incubaciones en proceso.` : "",
-      incubacionesRecientes: recientes || []
+      incubacionesRecientes: recientes || [],
+      totalLineas: totalLineas?.[0]?.total || 0
     };
   });
+
+  this.on('analizarCrucePorParentesco', async (req) => {
+    const { macho_ID, hembra_ID, tipoParentesco } = req.data;
+
+    if (!macho_ID || !hembra_ID || !tipoParentesco) {
+      return req.reject(400, 'Debe seleccionar macho, hembra y tipo de parentesco.');
+    }
+
+    if (macho_ID === hembra_ID) {
+      return req.reject(400, 'El macho y la hembra no pueden ser el mismo ejemplar.');
+    }
+
+    const reglas = {
+      PADRE_HIJA: {
+        porcentaje: 25,
+        nivelRiesgo: 'ALTO',
+        state: 'Error',
+        messageType: 'Error',
+        descripcion: 'Cruce directo padre × hija.',
+        recomendacion: 'Usar solo si el ave padre es excepcional y se busca fijar una característica muy específica. Requiere selección fuerte de crías.'
+      },
+      MADRE_HIJO: {
+        porcentaje: 25,
+        nivelRiesgo: 'ALTO',
+        state: 'Error',
+        messageType: 'Error',
+        descripcion: 'Cruce directo madre × hijo.',
+        recomendacion: 'Riesgo alto. Recomendado únicamente bajo control estricto y con descarte de crías débiles.'
+      },
+      ABUELO_NIETA: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce abuelo × nieta.',
+        recomendacion: 'Útil para reforzar características del fundador sin llegar al riesgo máximo.'
+      },
+      ABUELA_NIETO: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce abuela × nieto.',
+        recomendacion: 'Puede ayudar a consolidar línea materna. Evaluar salud, fertilidad y desempeño.'
+      },
+      TIO_SOBRINA: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce tío × sobrina.',
+        recomendacion: 'Buen cruce de línea si ambos provienen de aves sobresalientes.'
+      },
+      TIA_SOBRINO: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce tía × sobrino.',
+        recomendacion: 'Permite conservar sangre familiar con riesgo manejable.'
+      },
+      MEDIO_HERMANOS: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce entre medio hermanos.',
+        recomendacion: 'Puede fijar cualidades, pero vigilar vigor, tamaño, fertilidad y salud.'
+      },
+      PRIMOS: {
+        porcentaje: 6.25,
+        nivelRiesgo: 'BAJO_MODERADO',
+        state: 'Success',
+        messageType: 'Success',
+        descripcion: 'Cruce entre primos.',
+        recomendacion: 'Opción más segura para mantener familia sin exceso de consanguinidad.'
+      },
+      SIN_PARENTESCO: {
+        porcentaje: 0,
+        nivelRiesgo: 'BAJO',
+        state: 'Success',
+        messageType: 'Success',
+        descripcion: 'No se detecta parentesco directo.',
+        recomendacion: 'Útil para refrescar sangre o crear una nueva base familiar.'
+      }
+    };
+
+    const resultado = reglas[tipoParentesco];
+
+    if (!resultado) {
+      return req.reject(400, 'Tipo de parentesco no válido.');
+    }
+
+    return resultado;
+  });
+
+  this.before("READ", Incubaciones, (req) => {
+    const userId = req.jwtUser && req.jwtUser.id;
+    console.log("imprimir req: " + JSON.stringify(req));
+    console.log("imprimir userId: " + JSON.stringify(userId));
+
+    if (!userId) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
+  });
+
+  this.before("READ", PlanesCruces, (req) => {
+    const userId = req.jwtUser && req.jwtUser.id;
+    console.log("imprimir req: " + JSON.stringify(req));
+    console.log("imprimir userId: " + JSON.stringify(userId));
+
+    if (!userId) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
+  });
+
+  this.before("READ", LineasAves, (req) => {
+    const userId = req.jwtUser && req.jwtUser.id;
+    console.log("imprimir req: " + JSON.stringify(req));
+    console.log("imprimir userId: " + JSON.stringify(userId));
+
+    if (!userId) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
+  });
+
 });

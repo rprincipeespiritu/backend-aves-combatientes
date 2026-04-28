@@ -25,6 +25,9 @@ service AveCombatienteService {
         message : String;
     };
 
+    entity LineasAves          as projection on combatiente.LineaAve;
+    entity PlanesCruces        as projection on combatiente.PlanCruce;
+
     ////@odata.draft.enabled
     @cds.redirection.target
     entity Pesajes             as projection on combatiente.Pesaje;
@@ -100,6 +103,13 @@ service AveCombatienteService {
     @readonly
     entity AvesActivas         as
         select from combatiente.Ave
+        where
+            estado <> 'ELIMINADO';
+
+    @cds.redirection.target
+    @readonly
+    entity LineasAvesActivas   as
+        select from combatiente.LineaAve
         where
             estado <> 'ELIMINADO';
 
@@ -288,6 +298,28 @@ service AveCombatienteService {
             estado          : String;
             fechaIncubacion : Timestamp;
         };
+        totalLineas             : Integer;
+    };
+
+    action   analizarCrucePorParentesco(macho_ID: UUID,
+                                        hembra_ID: UUID,
+                                        tipoParentesco: String)                                                                                         returns {
+        nivelRiesgo   : String;
+        porcentaje    : Decimal(5, 2);
+        descripcion   : String;
+        recomendacion : String;
+        state         : String;
+        messageType   : String;
+    };
+
+    action   eliminarLineaAve(lineaAveId: String)                                                                                                                 returns {
+        success : Boolean;
+        message : String;
+    };   
+
+    action   eliminarIncubacion(incubacionId: String)                                                                                                                 returns {
+        success : Boolean;
+        message : String;
     };
 
 }
