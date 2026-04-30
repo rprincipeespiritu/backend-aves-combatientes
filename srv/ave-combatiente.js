@@ -17,6 +17,9 @@ const PERMISOS_ROL = {
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    LineasAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    PlanesCruces: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Tratamientos: ["READ", "CREATE", "UPDATE", "DELETE"],
     Alimentaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -37,6 +40,9 @@ const PERMISOS_ROL = {
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ", "CREATE", "UPDATE"],
     Incubaciones: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    LineasAves: ["READ", "CREATE", "UPDATE"],
+    PlanesCruces: ["READ", "CREATE", "UPDATE"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ", "CREATE", "UPDATE"],
     Transacciones: ["READ", "CREATE"],
@@ -56,6 +62,9 @@ const PERMISOS_ROL = {
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    LineasAves: ["READ"],
+    PlanesCruces: ["READ"],
     Tratamientos: ["READ", "CREATE", "UPDATE"],
     Alimentaciones: ["READ", "CREATE"],
     Transacciones: [],
@@ -75,6 +84,9 @@ const PERMISOS_ROL = {
     Pesajes: ["READ"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
+    EvaluacionesAves: ["READ"],
+    LineasAves: ["READ"],
+    PlanesCruces: ["READ"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ"],
     Transacciones: [],
@@ -180,7 +192,8 @@ module.exports = cds.service.impl(async function () {
     Usuario,
     Rol,
     LineasAves,
-    PlanesCruces
+    PlanesCruces,
+    EvaluacionesAves
   } = this.entities;
 
   // Intercepta TODAS las operaciones del servicio
@@ -259,6 +272,14 @@ module.exports = cds.service.impl(async function () {
       Roles: "Roles",
       HistorialCambios: "Historial",
       Historial: "Historial",
+      LineaAve: "LineasAves",
+      LineasAves: "LineasAves",
+      PlanCruce: "PlanesCruces",
+      PlanesCruces: "PlanesCruces",
+      EvaluacionAve: "EvaluacionesAves",
+      EvaluacionesAves: "EvaluacionesAves",
+      IncubacionDetalle: "IncubacionDetalles",
+      IncubacionDetalles: "IncubacionDetalles",
     };
 
     const entidadServicio = ENTIDAD_MAP[entidad];
@@ -675,8 +696,58 @@ module.exports = cds.service.impl(async function () {
       return req.reject(400, 'Nacidos + No eclosionados no puede ser mayor a fértiles');
     }
 
+    if (data.planCruce_ID) {
+      const plan = await SELECT.one.from(PlanesCruces).where({ ID: data.planCruce_ID });
+      if (!plan) {
+        return req.reject(400, "El plan de cruce seleccionado no existe");
+      }
+
+      data.padre_ID = data.padre_ID || plan.macho_ID;
+      data.madre_ID = data.madre_ID || plan.hembra_ID;
+      data.tipoParentesco = data.tipoParentesco || plan.tipoParentesco;
+      data.nivelRiesgo = data.nivelRiesgo || plan.nivelRiesgo;
+      data.porcentaje = data.porcentaje ?? plan.porcentaje;
+    }
+
     if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
       return req.reject(400, 'El padre y la madre no pueden ser la misma ave');
+    }
+
+    if (data.padre_ID && data.madre_ID) {
+      try {
+        const analisis = await analizarParentescoAutomatico(data.padre_ID, data.madre_ID, 5);
+        data.tipoParentesco = analisis.tipoParentesco;
+        data.nivelRiesgo = analisis.nivelRiesgo;
+        data.porcentaje = analisis.porcentaje;
+      } catch (error) {
+        return req.reject(400, error.message);
+      }
+    }
+  });
+
+  this.before("CREATE", PlanesCruces, async (req) => {
+    if (!req.data.codigo) {
+      const fecha = new Date();
+      const yyyyMMdd = fecha.toISOString().slice(0, 10).replace(/-/g, "");
+      const hhmmss = fecha.toTimeString().slice(0, 8).replace(/:/g, "");
+      req.data.codigo = `PC-${yyyyMMdd}-${hhmmss}`;
+    }
+  });
+
+  this.before(["CREATE", "UPDATE"], EvaluacionesAves, async (req) => {
+    const campos = ["vigor", "saludGeneral", "fertilidad"];
+    for (const campo of campos) {
+      if (req.data[campo] === undefined || req.data[campo] === null) continue;
+      const valor = Number(req.data[campo]);
+      if (valor < 1 || valor > 10) {
+        return req.reject(400, `${campo} debe estar entre 1 y 10`);
+      }
+    }
+
+    if (req.data.ave_ID && req.data.aptoReproduccion !== undefined) {
+      await UPDATE(Aves)
+        .set({ aptoReproduccion: req.data.aptoReproduccion })
+        .where({ ID: req.data.ave_ID });
     }
   });
 
@@ -1186,6 +1257,170 @@ module.exports = cds.service.impl(async function () {
     return nodo;
   }
 
+  async function obtenerAveBasica(aveId) {
+    if (!aveId) return null;
+    return SELECT.one
+      .from(Aves)
+      .columns("ID", "placa", "nombre", "sexo", "padre_ID", "madre_ID", "aptoReproduccion", "estado")
+      .where({ ID: aveId });
+  }
+
+  async function construirMapaAncestros(aveId, generaciones, distancia = 0, mapa = new Map()) {
+    if (!aveId || distancia > generaciones) return mapa;
+
+    const ave = await obtenerAveBasica(aveId);
+    if (!ave) return mapa;
+
+    const existente = mapa.get(ave.ID);
+    if (!existente || distancia < existente.distancia) {
+      mapa.set(ave.ID, {
+        ID: ave.ID,
+        placa: ave.placa,
+        nombre: ave.nombre,
+        sexo: ave.sexo,
+        distancia,
+        padre_ID: ave.padre_ID,
+        madre_ID: ave.madre_ID,
+      });
+    }
+
+    if (distancia < generaciones) {
+      await construirMapaAncestros(ave.padre_ID, generaciones, distancia + 1, mapa);
+      await construirMapaAncestros(ave.madre_ID, generaciones, distancia + 1, mapa);
+    }
+
+    return mapa;
+  }
+
+  function clasificarCruce(porcentaje) {
+    if (porcentaje >= 25) {
+      return {
+        nivelRiesgo: "ALTO",
+        decision: "NO_RECOMENDADO",
+        state: "Error",
+        messageType: "Error",
+        recomendacion: "Riesgo alto. No repetir ni aprobar salvo una justificación técnica excepcional y seguimiento estricto de salud, fertilidad y vigor.",
+      };
+    }
+
+    if (porcentaje >= 12.5) {
+      return {
+        nivelRiesgo: "MODERADO",
+        decision: "OBSERVAR",
+        state: "Warning",
+        messageType: "Warning",
+        recomendacion: "Cruce cerrado. Puede usarse solo con aves sanas, fértiles y evaluadas. Medir nacimientos, supervivencia y defectos antes de repetir.",
+      };
+    }
+
+    if (porcentaje > 0) {
+      return {
+        nivelRiesgo: "BAJO_MODERADO",
+        decision: "APROBADO",
+        state: "Success",
+        messageType: "Success",
+        recomendacion: "Riesgo manejable para conservar familia. Mantener registros y evitar cerrar varias generaciones consecutivas.",
+      };
+    }
+
+    return {
+      nivelRiesgo: "BAJO",
+      decision: "APROBADO",
+      state: "Success",
+      messageType: "Success",
+      recomendacion: "No se detectó parentesco dentro de las generaciones revisadas. Útil para refrescar sangre o crear una base familiar.",
+    };
+  }
+
+  function describirParentesco(tipoParentesco) {
+    const descripciones = {
+      PADRE_HIJA: "Cruce directo padre x hija.",
+      MADRE_HIJO: "Cruce directo madre x hijo.",
+      ABUELO_NIETA: "Cruce abuelo x nieta.",
+      ABUELA_NIETO: "Cruce abuela x nieto.",
+      HERMANOS_COMPLETOS: "Cruce entre hermanos completos.",
+      MEDIO_HERMANOS: "Cruce entre medio hermanos.",
+      TIO_SOBRINA: "Cruce tío x sobrina.",
+      TIA_SOBRINO: "Cruce tía x sobrino.",
+      PRIMOS: "Cruce entre primos.",
+      PARENTESCO_LEJANO: "Se detectaron ancestros comunes lejanos.",
+      SIN_PARENTESCO: "No se detecta parentesco directo.",
+    };
+
+    return descripciones[tipoParentesco] || "Parentesco detectado.";
+  }
+
+  async function analizarParentescoAutomatico(machoId, hembraId, generaciones = 5) {
+    const maxGeneraciones = Math.min(Math.max(Number(generaciones) || 5, 1), 8);
+    const macho = await obtenerAveBasica(machoId);
+    const hembra = await obtenerAveBasica(hembraId);
+
+    if (!macho || !hembra) throw new Error("Macho o hembra no encontrados.");
+    if (macho.ID === hembra.ID) throw new Error("El macho y la hembra no pueden ser el mismo ejemplar.");
+    if (macho.sexo !== "M" || hembra.sexo !== "H") throw new Error("Verifica que el macho sea M y la hembra sea H.");
+    if (macho.aptoReproduccion === false || hembra.aptoReproduccion === false) {
+      throw new Error("Uno de los reproductores no está apto para reproducción.");
+    }
+
+    const mapaMacho = await construirMapaAncestros(macho.ID, maxGeneraciones);
+    const mapaHembra = await construirMapaAncestros(hembra.ID, maxGeneraciones);
+    let tipoParentesco = "SIN_PARENTESCO";
+
+    if (hembra.padre_ID === macho.ID) tipoParentesco = "PADRE_HIJA";
+    else if (macho.madre_ID === hembra.ID) tipoParentesco = "MADRE_HIJO";
+    else if (mapaHembra.get(macho.ID)?.distancia === 2) tipoParentesco = "ABUELO_NIETA";
+    else if (mapaMacho.get(hembra.ID)?.distancia === 2) tipoParentesco = "ABUELA_NIETO";
+
+    const ancestrosComunes = [];
+    let porcentaje = ["PADRE_HIJA", "MADRE_HIJO"].includes(tipoParentesco) ? 25 : 0;
+
+    for (const [id, ancestroMacho] of mapaMacho.entries()) {
+      if (id === macho.ID || id === hembra.ID) continue;
+      const ancestroHembra = mapaHembra.get(id);
+      if (!ancestroHembra) continue;
+
+      const contribucion = Math.pow(0.5, ancestroMacho.distancia + ancestroHembra.distancia + 1) * 100;
+      porcentaje += contribucion;
+      ancestrosComunes.push({
+        ID: id,
+        placa: ancestroMacho.placa,
+        nombre: ancestroMacho.nombre,
+        distanciaMacho: ancestroMacho.distancia,
+        distanciaHembra: ancestroHembra.distancia,
+        contribucion: Number(contribucion.toFixed(2)),
+      });
+    }
+
+    if (tipoParentesco === "SIN_PARENTESCO" && ancestrosComunes.length) {
+      const padresCompartidos = ancestrosComunes.filter((a) => a.distanciaMacho === 1 && a.distanciaHembra === 1);
+      const relacionTio = ancestrosComunes.some((a) =>
+        (a.distanciaMacho === 1 && a.distanciaHembra === 2) ||
+        (a.distanciaMacho === 2 && a.distanciaHembra === 1)
+      );
+      const relacionPrimos = ancestrosComunes.some((a) => a.distanciaMacho === 2 && a.distanciaHembra === 2);
+
+      if (padresCompartidos.length) tipoParentesco = padresCompartidos.length >= 2 ? "HERMANOS_COMPLETOS" : "MEDIO_HERMANOS";
+      else if (relacionTio) tipoParentesco = "TIO_SOBRINA";
+      else if (relacionPrimos) tipoParentesco = "PRIMOS";
+      else tipoParentesco = "PARENTESCO_LEJANO";
+    }
+
+    porcentaje = Number(Math.min(porcentaje, 100).toFixed(2));
+    const clasificacion = clasificarCruce(porcentaje);
+
+    return {
+      tipoParentesco,
+      nivelRiesgo: clasificacion.nivelRiesgo,
+      porcentaje,
+      descripcion: describirParentesco(tipoParentesco),
+      recomendacion: clasificacion.recomendacion,
+      decision: clasificacion.decision,
+      state: clasificacion.state,
+      messageType: clasificacion.messageType,
+      ancestrosComunes: JSON.stringify(ancestrosComunes),
+    };
+  }
+
   this.on("eliminarAve", async (req) => {
     try {
       console.log("BODY:", req.data);
@@ -1488,6 +1723,13 @@ module.exports = cds.service.impl(async function () {
       })
       .columns("count(*) as total");
 
+    const totalPlanes = await SELECT.from(PlanesCruces)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADA" }
+      })
+      .columns("count(*) as total");
+
     const totalNacidosRes = await SELECT.from(IncubacionDetalle)
       .where({
         usuario_ID: usuarioId
@@ -1516,7 +1758,8 @@ module.exports = cds.service.impl(async function () {
       alertaIncubaciones: iProgramadas > 0 ? `Tienes ${iProgramadas} incubaciones programadas.` : "",
       alertaEclosion: iActivas > 0 ? `Tienes ${iActivas} incubaciones en proceso.` : "",
       incubacionesRecientes: recientes || [],
-      totalLineas: totalLineas?.[0]?.total || 0
+      totalLineas: totalLineas?.[0]?.total || 0,
+      totalPlanes: totalPlanes?.[0]?.total || 0,
     };
   });
 
@@ -1613,6 +1856,20 @@ module.exports = cds.service.impl(async function () {
     }
 
     return resultado;
+  });
+
+  this.on("analizarCruceAutomatico", async (req) => {
+    const { macho_ID, hembra_ID, generaciones } = req.data;
+
+    if (!macho_ID || !hembra_ID) {
+      return req.reject(400, "Debe seleccionar macho y hembra.");
+    }
+
+    try {
+      return await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5);
+    } catch (error) {
+      return req.reject(400, error.message);
+    }
   });
 
   this.before("READ", Incubaciones, (req) => {

@@ -38,41 +38,41 @@ entity TipoAve : cuid {
 
 entity Ave : cuid, managed {
     // Identificación
-    placa              : String(20)              @mandatory; // Placa única
-    nombre             : String(100);
-    apodo              : String(50);
+    placa                     : String(20)              @mandatory; // Placa única
+    nombre                    : String(100);
+    apodo                     : String(50);
 
     // Características físicas
-    raza               : String(250);
-    color              : String(250);
-    tipoAve            : String(250);
-    sexo               : String(1)               @assert.enum: {
+    raza                      : String(250);
+    color                     : String(250);
+    tipoAve                   : String(250);
+    sexo                      : String(1)               @assert.enum: {
         M,
         H
     }; // Macho/Hembra
 
     // Fechas importantes
-    fechaNacimiento    : Date;
-    fechaCompra        : Date;
-    fechaFallecimiento : Date;
-    edad               : Integer; // Calculado
+    fechaNacimiento           : Date;
+    fechaCompra               : Date;
+    fechaFallecimiento        : Date;
+    edad                      : Integer; // Calculado
 
     // Genealogía
-    padre              : Association to Ave;
-    madre              : Association to Ave;
+    padre                     : Association to Ave;
+    madre                     : Association to Ave;
     // hijos              : Association to many Ave
     //                          on hijos.padre = $self
     //                          or hijos.madre = $self;
 
     // Información adicional
-    procedencia        : String(200);
-    criador            : String(200);
-    valorCompra        : Decimal(10, 2);
-    valorActual        : Decimal(10, 2);
-    observaciones      : LargeString;
+    procedencia               : String(200);
+    criador                   : String(200);
+    valorCompra               : Decimal(10, 2);
+    valorActual               : Decimal(10, 2);
+    observaciones             : LargeString;
 
     // Estado
-    estado             : String(20)              @assert.enum: {
+    estado                    : String(20)              @assert.enum: {
         ACTIVO,
         VENDIDO,
         PRESTADO,
@@ -80,37 +80,42 @@ entity Ave : cuid, managed {
         FALLECIDO,
         ELIMINADO
     };
-    categoria          : String(20)              @assert.enum: {
+    categoria                 : String(20)              @assert.enum: {
         BUENO,
         EXCELENTE,
         EXTRAORDINARIO
     };
-    cruce              : String(20)              @assert.enum: {
+    cruce                     : String(20)              @assert.enum: {
         ABIERTO,
         INBREEDING
     };
-    cria               : Boolean;
-    padrote            : Boolean;
-    ubicacion          : String(200);
+    generacion                : Integer default 0;
+    coeficienteConsanguinidad : Decimal(5, 2);
+    aptoReproduccion          : Boolean default true;
+    motivoSeleccion           : String(500);
+    motivoDescarte            : String(500);
+    cria                      : Boolean;
+    padrote                   : Boolean;
+    ubicacion                 : String(200);
 
     // Relaciones
-    pesajes            : Composition of many Pesaje
-                             on pesajes.ave = $self;
-    peleas             : Association to many Pelea
-                             on peleas.ave = $self;
-    incubacion         : Association to Incubacion;
-    fotos              : Composition of many FotoAve
-                             on fotos.ave = $self;
-    videos             : Composition of many VideoAve
-                             on videos.ave = $self;
-    documentos         : Composition of many DocumentoAve
-                             on documentos.ave = $self;
-    usuario            : Association to Usuario  @mandatory;
-    linea              : Association to LineaAve @mandatory;
+    pesajes                   : Composition of many Pesaje
+                                    on pesajes.ave = $self;
+    peleas                    : Association to many Pelea
+                                    on peleas.ave = $self;
+    incubacion                : Association to Incubacion;
+    fotos                     : Composition of many FotoAve
+                                    on fotos.ave = $self;
+    videos                    : Composition of many VideoAve
+                                    on videos.ave = $self;
+    documentos                : Composition of many DocumentoAve
+                                    on documentos.ave = $self;
+    usuario                   : Association to Usuario  @mandatory;
+    linea                     : Association to LineaAve;
 
     // SharePoint
-    sharepointFolderId : String(200);
-    sharepointUrl      : String(500);
+    sharepointFolderId        : String(200);
+    sharepointUrl             : String(500);
 }
 
 //============================================
@@ -229,17 +234,29 @@ entity Incubacion : cuid, managed {
 }
 
 entity IncubacionDetalle : cuid, managed {
-    incubacion           : Association to Incubacion @mandatory;
+    incubacion             : Association to Incubacion @mandatory;
 
-    padre                : Association to Ave        @mandatory;
-    madre                : Association to Ave        @mandatory;
+    padre                  : Association to Ave        @mandatory;
+    madre                  : Association to Ave        @mandatory;
 
-    totalHuevos          : Integer default 0;
-    huevosFertiles       : Integer default 0;
-    huevosEclosionados   : Integer default 0;
-    huevosNoEclosionados : Integer default 0;
+    totalHuevos            : Integer default 0;
+    huevosFertiles         : Integer default 0;
+    huevosEclosionados     : Integer default 0;
+    huevosNoEclosionados   : Integer default 0;
 
-    usuario              : Association to Usuario    @mandatory;
+    planCruce              : Association to PlanCruce;
+    tipoParentesco         : String(50);
+    nivelRiesgo            : String(20);
+    porcentaje             : Decimal(5, 2);
+    nacidosVivos7Dias      : Integer default 0;
+    nacidosVivos30Dias     : Integer default 0;
+    nacidosVivos90Dias     : Integer default 0;
+    vigorPromedio          : Decimal(5, 2);
+    defectosObservados     : String(500);
+    recomendacionResultado : String(500);
+    repetirCruce           : Boolean;
+
+    usuario                : Association to Usuario    @mandatory;
 
 }
 
@@ -424,43 +441,85 @@ entity HistorialCambios : cuid, managed {
 }
 
 entity LineaAve : cuid, managed {
-    nombre       : String(100)                 @mandatory;
-    descripcion  : String(500);
-    objetivo     : String(500);
+    nombre           : String(100)                 @mandatory;
+    descripcion      : String(500);
+    objetivo         : String(500);
+    generacionActual : Integer default 0;
+    estadoMejora     : String(30) default 'ACTIVA' @assert.enum: {
+        ACTIVA,
+        OBSERVACION,
+        REFRESCO_REQUERIDO,
+        CERRADA
+    };
 
-    estado       : String(20) default 'ACTIVA' @assert.enum: {
+    estado           : String(20) default 'ACTIVA' @assert.enum: {
         ACTIVA,
         INACTIVA,
         ELIMINADO
     };
 
-    aveFundador  : Association to Ave;
-    aveFundadora : Association to Ave;
+    aveFundador      : Association to Ave;
+    aveFundadora     : Association to Ave;
 
-    planes       : Composition of many PlanCruce
-                       on planes.linea = $self;
-    aves         : Association to many Ave
-                       on aves.linea = $self;
+    planes           : Composition of many PlanCruce
+                           on planes.linea = $self;
+    aves             : Association to many Ave
+                           on aves.linea = $self;
 
-    usuario      : Association to Usuario      @mandatory;
+    usuario          : Association to Usuario      @mandatory;
 }
 
 entity PlanCruce : cuid, managed {
-    linea          : Association to LineaAve @mandatory;
+    codigo                 : String(30);
+    linea                  : Association to LineaAve        @mandatory;
 
-    macho          : Association to Ave      @mandatory;
-    hembra         : Association to Ave      @mandatory;
+    macho                  : Association to Ave             @mandatory;
+    hembra                 : Association to Ave             @mandatory;
 
-    tipoParentesco : String(50);
-    objetivoCruce  : String(500);
+    tipoParentesco         : String(50);
+    objetivoCruce          : String(500);
 
-    nivelRiesgo    : String(20);
-    porcentaje     : Decimal(5, 2);
+    nivelRiesgo            : String(20);
+    porcentaje             : Decimal(5, 2);
+    ancestrosComunes       : LargeString;
+    generacionesAnalizadas : Integer;
+    decision               : String(20) default 'OBSERVAR'  @assert.enum: {
+        APROBADO,
+        OBSERVAR,
+        NO_RECOMENDADO
+    };
+    resultadoEsperado      : String(1000);
+    resultadoReal          : String(1000);
 
-    recomendacion  : String(1000);
-    estado         : String(20) default 'PROPUESTO';
+    recomendacion          : String(1000);
+    estado                 : String(20) default 'PROPUESTO' @assert.enum: {
+        PROPUESTO,
+        APROBADO,
+        RECHAZADO,
+        EJECUTADO,
+        EVALUADO,
+        ELIMINADO
+    };
 
-    fechaPropuesta : Date;
+    fechaPropuesta         : Date;
 
-    usuario        : Association to Usuario  @mandatory;
+    usuario                : Association to Usuario         @mandatory;
+}
+
+entity EvaluacionAve : cuid, managed {
+    ave                : Association to Ave     @mandatory;
+    fecha              : Date                   @mandatory;
+    vigor              : Integer;
+    saludGeneral       : Integer;
+    fertilidad         : Integer;
+    desarrollo         : String(20)             @assert.enum: {
+        EXCELENTE,
+        BUENO,
+        REGULAR,
+        DEFICIENTE
+    };
+    defectosObservados : String(500);
+    aptoReproduccion   : Boolean default true;
+    recomendacion      : String(500);
+    usuario            : Association to Usuario @mandatory;
 }
