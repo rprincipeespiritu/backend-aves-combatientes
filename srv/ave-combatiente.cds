@@ -27,6 +27,7 @@ service AveCombatienteService {
 
     entity LineasAves          as projection on combatiente.LineaAve;
     entity PlanesCruces        as projection on combatiente.PlanCruce;
+    entity EvaluacionesAves    as projection on combatiente.EvaluacionAve;
 
     ////@odata.draft.enabled
     @cds.redirection.target
@@ -310,6 +311,20 @@ service AveCombatienteService {
         recomendacion : String;
         state         : String;
         messageType   : String;
+    };
+
+    action   analizarCruceAutomatico(macho_ID: UUID,
+                                     hembra_ID: UUID,
+                                     generaciones: Integer)                                                                                             returns {
+        tipoParentesco   : String;
+        nivelRiesgo      : String;
+        porcentaje       : Decimal(5, 2);
+        descripcion      : String;
+        recomendacion    : String;
+        decision         : String;
+        state            : String;
+        messageType      : String;
+        ancestrosComunes : LargeString;
     };
 
     action   eliminarLineaAve(lineaAveId: String)                                                                                                                 returns {
