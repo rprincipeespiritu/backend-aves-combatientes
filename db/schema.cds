@@ -81,6 +81,8 @@ entity Ave : cuid, managed {
         ELIMINADO
     };
     categoria                 : String(20)              @assert.enum: {
+        PESIMO,
+        REGULAR,
         BUENO,
         EXCELENTE,
         EXTRAORDINARIO
