@@ -674,6 +674,72 @@ module.exports = cds.service.impl(async function () {
     }
   }
 
+  async function completarDetalleDesdePlanCruce(data) {
+    if (!data.planCruce_ID) return;
+
+    const plan = await SELECT.one.from(PlanesCruces).where({ ID: data.planCruce_ID });
+    if (!plan) {
+      throw new Error("El plan de cruce seleccionado no existe");
+    }
+
+    data.padre_ID = data.padre_ID || plan.macho_ID;
+    data.madre_ID = data.madre_ID || plan.hembra_ID;
+    data.tipoParentesco = data.tipoParentesco || plan.tipoParentesco;
+    data.nivelRiesgo = data.nivelRiesgo || plan.nivelRiesgo;
+    data.porcentaje = data.porcentaje ?? plan.porcentaje;
+  }
+
+  async function validarDetallesUnicosEnPayload(req, detalles = []) {
+    const parejas = new Set();
+
+    for (const detalle of detalles) {
+      try {
+        await completarDetalleDesdePlanCruce(detalle);
+      } catch (error) {
+        return req.reject(400, error.message);
+      }
+
+      if (!detalle.padre_ID || !detalle.madre_ID) continue;
+
+      if (detalle.padre_ID === detalle.madre_ID) {
+        return req.reject(400, "El padre y la madre no pueden ser la misma ave");
+      }
+
+      const clave = `${detalle.padre_ID}|${detalle.madre_ID}`;
+      if (parejas.has(clave)) {
+        return req.reject(409, "No se puede registrar dos filas con los mismos padres en una misma incubacion.");
+      }
+
+      parejas.add(clave);
+    }
+  }
+
+  async function validarDetalleUnicoEnIncubacion(req, data) {
+    if (!data.incubacion_ID || !data.padre_ID || !data.madre_ID) return;
+
+    const detalleId = data.ID || req.params?.[0]?.ID;
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const where = {
+      incubacion_ID: data.incubacion_ID,
+      padre_ID: data.padre_ID,
+      madre_ID: data.madre_ID,
+    };
+
+    if (usuarioId) {
+      where.usuario_ID = usuarioId;
+    }
+
+    const detallesExistentes = await SELECT
+      .from(IncubacionDetalles)
+      .columns("ID")
+      .where(where);
+
+    const duplicado = detallesExistentes.some((detalle) => detalle.ID !== detalleId);
+    if (duplicado) {
+      return req.reject(409, "No se puede registrar dos filas con los mismos padres en una misma incubacion.");
+    }
+  }
+
   this.before(['CREATE', 'UPDATE'], IncubacionDetalles, async (req) => {
     const data = req.data;
 
@@ -698,22 +764,17 @@ module.exports = cds.service.impl(async function () {
       return req.reject(400, 'Nacidos + No eclosionados no puede ser mayor a fértiles');
     }
 
-    if (data.planCruce_ID) {
-      const plan = await SELECT.one.from(PlanesCruces).where({ ID: data.planCruce_ID });
-      if (!plan) {
-        return req.reject(400, "El plan de cruce seleccionado no existe");
-      }
-
-      data.padre_ID = data.padre_ID || plan.macho_ID;
-      data.madre_ID = data.madre_ID || plan.hembra_ID;
-      data.tipoParentesco = data.tipoParentesco || plan.tipoParentesco;
-      data.nivelRiesgo = data.nivelRiesgo || plan.nivelRiesgo;
-      data.porcentaje = data.porcentaje ?? plan.porcentaje;
+    try {
+      await completarDetalleDesdePlanCruce(data);
+    } catch (error) {
+      return req.reject(400, error.message);
     }
 
     if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
       return req.reject(400, 'El padre y la madre no pueden ser la misma ave');
     }
+
+    await validarDetalleUnicoEnIncubacion(req, data);
 
     if (data.padre_ID && data.madre_ID) {
       try {
@@ -728,6 +789,35 @@ module.exports = cds.service.impl(async function () {
   });
 
   this.before("CREATE", PlanesCruces, async (req) => {
+    const data = req.data;
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+
+    if (!data.linea_ID || !data.macho_ID || !data.hembra_ID) {
+      return req.reject(400, "Debe seleccionar linea, macho y hembra para crear el plan de cruce.");
+    }
+
+    if (data.macho_ID === data.hembra_ID) {
+      return req.reject(400, "El macho y la hembra no pueden ser el mismo ejemplar.");
+    }
+
+    const planDuplicado = await SELECT.one
+      .from(PlanesCruces)
+      .columns("ID", "codigo")
+      .where({
+        usuario_ID: usuarioId,
+        linea_ID: data.linea_ID,
+        macho_ID: data.macho_ID,
+        hembra_ID: data.hembra_ID,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    if (planDuplicado) {
+      return req.reject(
+        409,
+        `Ya existe un plan de cruce con los mismos padres para esta linea: ${planDuplicado.codigo || planDuplicado.ID}.`,
+      );
+    }
+
     if (!req.data.codigo) {
       const fecha = new Date();
       const yyyyMMdd = fecha.toISOString().slice(0, 10).replace(/-/g, "");
@@ -755,6 +845,10 @@ module.exports = cds.service.impl(async function () {
 
   this.before(['CREATE', 'UPDATE'], Incubaciones, async (req) => {
     const data = req.data;
+
+    if (Array.isArray(data.detalles)) {
+      await validarDetallesUnicosEnPayload(req, data.detalles);
+    }
 
     if (data.fechaIncubacion) {
       const fechaIncubacion = new Date(data.fechaIncubacion);
