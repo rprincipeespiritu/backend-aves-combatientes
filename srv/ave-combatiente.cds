@@ -25,6 +25,16 @@ service AveCombatienteService {
         message : String;
     };
 
+    action   eliminarCria(criaId: String)                                                                                                               returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   registrarCriaComoAve(criaId: String,
+                                  placa: String,
+                                  genero: String)                                                                                                       returns Aves;
+
+    entity Crias               as projection on combatiente.Cria;
     entity LineasAves          as projection on combatiente.LineaAve;
     entity PlanesCruces        as projection on combatiente.PlanCruce;
     entity EvaluacionesAves    as projection on combatiente.EvaluacionAve;
