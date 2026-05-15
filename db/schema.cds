@@ -38,7 +38,10 @@ entity TipoAve : cuid {
 
 entity Ave : cuid, managed {
     // Identificación
-    placa                     : String(20)              @mandatory; // Placa única
+    placa                     : String(20); // Placa única
+    cintillo                  : String(30); // Identificador temporal para pollitos
+    colorCintillo             : String(30);
+    temporada                 : Integer;
     nombre                    : String(100);
     apodo                     : String(50);
 
@@ -87,6 +90,11 @@ entity Ave : cuid, managed {
         EXCELENTE,
         EXTRAORDINARIO
     };
+    etapaVida                 : String(20) default 'ADULTO' @assert.enum: {
+        POLLITO,
+        JOVEN,
+        ADULTO
+    };
     cruce                     : String(20)              @assert.enum: {
         ABIERTO,
         INBREEDING
@@ -118,6 +126,30 @@ entity Ave : cuid, managed {
     // SharePoint
     sharepointFolderId        : String(200);
     sharepointUrl             : String(500);
+}
+
+entity Cria : cuid, managed {
+    cintillo        : String(30)  @mandatory;
+    colorCintillo   : String(30)  @mandatory;
+    temporada       : Integer     @mandatory;
+    nombre          : String(100);
+    sexo            : String(1)   @assert.enum: {
+        M,
+        H
+    };
+    fechaNacimiento : Date;
+    color           : String(250);
+    ubicacion       : String(200);
+    observaciones   : LargeString;
+    estado          : String(20) default 'ACTIVA' @assert.enum: {
+        ACTIVA,
+        REGISTRADA_ADULTA,
+        ELIMINADO
+    };
+    padre           : Association to Ave;
+    madre           : Association to Ave;
+    aveGenerada     : Association to Ave;
+    usuario         : Association to Usuario @mandatory;
 }
 
 //============================================

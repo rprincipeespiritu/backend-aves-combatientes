@@ -14,6 +14,7 @@ const JWT_EXPIRES = process.env.JWT_EXPIRES || "1h";
 const PERMISOS_ROL = {
   ADMIN: {
     Aves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Crias: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
@@ -37,6 +38,7 @@ const PERMISOS_ROL = {
   },
   CRIADOR: {
     Aves: ["READ", "CREATE", "UPDATE"],
+    Crias: ["READ", "CREATE", "UPDATE"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ", "CREATE", "UPDATE"],
     Incubaciones: ["READ", "CREATE", "UPDATE"],
@@ -59,6 +61,7 @@ const PERMISOS_ROL = {
   },
   VETERINARIO: {
     Aves: ["READ"],
+    Crias: ["READ"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
@@ -81,6 +84,7 @@ const PERMISOS_ROL = {
   },
   VIEWER: {
     Aves: ["READ"],
+    Crias: ["READ"],
     Pesajes: ["READ"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
@@ -182,6 +186,7 @@ function middlewarePermisos(req, res, next) {
 module.exports = cds.service.impl(async function () {
   const {
     Aves,
+    Crias,
     Pesajes,
     Peleas,
     Incubaciones,
@@ -193,8 +198,24 @@ module.exports = cds.service.impl(async function () {
     Rol,
     LineasAves,
     PlanesCruces,
-    EvaluacionesAves
+    EvaluacionesAves,
+    IncubacionesActivas,
+    AvesActivas,
+    LineasAvesActivas,
   } = this.entities;
+
+  function agregarFiltroUsuario(req, campoUsuario = "usuario_ID") {
+    const userId = req.jwtUser && req.jwtUser.id;
+    if (!userId || !req.query?.SELECT) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
+  }
 
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
@@ -240,6 +261,8 @@ module.exports = cds.service.impl(async function () {
     const ENTIDAD_MAP = {
       Ave: "Aves",
       Aves: "Aves",
+      Cria: "Crias",
+      Crias: "Crias",
       Pesaje: "Pesajes",
       Pesajes: "Pesajes",
       Pelea: "Peleas",
@@ -604,24 +627,188 @@ module.exports = cds.service.impl(async function () {
     });
   });
 
-  this.before("READ", Aves, (req) => {
-    const userId = req.jwtUser && req.jwtUser.id;
-    console.log("imprimir req: " + JSON.stringify(req));
-    console.log("imprimir userId: " + JSON.stringify(userId));
+  this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
+  this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
+  this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
+  this.before("READ", LineasAvesActivas, (req) => agregarFiltroUsuario(req));
 
-    if (!userId) return;
+  function normalizarCria(data) {
+    data.cintillo = String(data.cintillo || "").trim().toUpperCase();
+    data.colorCintillo = String(data.colorCintillo || "").trim().toUpperCase();
+    data.temporada = Number(data.temporada || new Date().getFullYear());
+    data.estado = data.estado || "ACTIVA";
+  }
 
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
+  async function validarCria(req, data, criaIdExcluir) {
+    normalizarCria(data);
+
+    if (!data.cintillo) return req.reject(400, "El cintillo es requerido");
+    if (!data.colorCintillo) return req.reject(400, "El color de cintillo es requerido");
+    if (!data.temporada || data.temporada < 2000 || data.temporada > 2100) {
+      return req.reject(400, "La temporada debe ser un anio valido");
+    }
+    if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
+      return req.reject(400, "El padre y la madre no pueden ser la misma ave");
     }
 
-    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const existentes = await SELECT.from(Crias)
+      .columns("ID")
+      .where({
+        usuario_ID: usuarioId,
+        cintillo: data.cintillo,
+        colorCintillo: data.colorCintillo,
+        temporada: data.temporada,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    const duplicado = existentes.find((cria) => !criaIdExcluir || cria.ID !== criaIdExcluir);
+    if (duplicado) {
+      return req.reject(409, `Ya existe una cria con cintillo ${data.cintillo}, color ${data.colorCintillo} y temporada ${data.temporada}`);
+    }
+  }
+
+  this.before("CREATE", Crias, async (req) => {
+    await validarCria(req, req.data);
   });
+
+  this.before("UPDATE", Crias, async (req) => {
+    const criaId = req.params?.[0]?.ID;
+    const actual = criaId ? await SELECT.one.from(Crias).where({ ID: criaId }) : null;
+    const dataCompleta = { ...(actual || {}), ...req.data };
+
+    await validarCria(req, dataCompleta, criaId);
+
+    req.data.cintillo = dataCompleta.cintillo;
+    req.data.colorCintillo = dataCompleta.colorCintillo;
+    req.data.temporada = dataCompleta.temporada;
+  });
+
+  this.on("eliminarCria", async (req) => {
+    const criaId = req.data.criaId;
+    if (!criaId) return req.reject(400, "El ID de la cria es obligatorio");
+
+    const cria = await SELECT.one.from(Crias).where({ ID: criaId });
+    if (!cria) return req.reject(404, "Cria no encontrada");
+
+    await UPDATE(Crias).set({ estado: "ELIMINADO" }).where({ ID: criaId });
+    return { success: true, message: "Cria eliminada correctamente" };
+  });
+
+  this.on("registrarCriaComoAve", async (req) => {
+    const criaId = req.data.criaId;
+    const placa = String(req.data.placa || "").trim().toUpperCase();
+    const genero = String(req.data.genero || "").trim().toUpperCase();
+    if (!criaId) return req.reject(400, "El ID de la cria es obligatorio");
+    if (!placa) return req.reject(400, "La placa del ave adulta es obligatoria");
+    if (!genero) return req.reject(400, "El género del ave adulta es obligatorio");
+
+    const cria = await SELECT.one.from(Crias).where({ ID: criaId });
+    if (!cria) return req.reject(404, "Cria no encontrada");
+    if (cria.estado === "REGISTRADA_ADULTA" && cria.aveGenerada_ID) {
+      return req.reject(409, "Esta cria ya fue registrada como ave adulta");
+    }
+
+    const existePlaca = await SELECT.one.from(Aves).where({ placa });
+    if (existePlaca) {
+      return req.reject(409, `Ya existe un ave con la placa ${placa}`);
+    }
+
+    const aveId = crypto.randomUUID();
+    const ave = {
+      ID: aveId,
+      placa,
+      nombre: cria.nombre || null,
+      sexo: genero,
+      fechaNacimiento: cria.fechaNacimiento,
+      color: cria.color || null,
+      ubicacion: cria.ubicacion || null,
+      observaciones: cria.observaciones || null,
+      estado: "ACTIVO",
+      categoria: "BUENO",
+      etapaVida: "ADULTO",
+      cria: true,
+      padrote: false,
+      aptoReproduccion: true,
+      usuario_ID: cria.usuario_ID,
+      padre_ID: cria.padre_ID || null,
+      madre_ID: cria.madre_ID || null,
+    };
+
+    await INSERT.into(Aves).entries(ave);
+    const aveCreada = await SELECT.one.from(Aves).where({ ID: aveId });
+
+    await UPDATE(Crias)
+      .set({
+        estado: "REGISTRADA_ADULTA",
+        aveGenerada_ID: aveCreada.ID,
+      })
+      .where({ ID: criaId });
+
+    return aveCreada;
+  });
+
+  function generarPlacaPollito(data) {
+    const base = `${data.temporada}-${data.colorCintillo}-${data.cintillo}`.toUpperCase();
+    return base.length <= 16
+      ? `CIN-${base}`
+      : `CIN-${crypto.createHash("sha1").update(base).digest("hex").slice(0, 16)}`;
+  }
+
+  async function validarIdentificacionPollito(req, data, aveIdExcluir) {
+    const esPollito = data.etapaVida === "POLLITO" || !!data.cintillo || !!data.colorCintillo || !!data.temporada;
+    if (!esPollito) return;
+
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const cintillo = String(data.cintillo || "").trim().toUpperCase();
+    const colorCintillo = String(data.colorCintillo || "").trim().toUpperCase();
+    const temporada = Number(data.temporada || new Date().getFullYear());
+
+    if (!cintillo) return req.reject(400, "El cintillo es requerido para registrar un pollito");
+    if (!colorCintillo) return req.reject(400, "El color de cintillo es requerido para registrar un pollito");
+    if (!temporada || temporada < 2000 || temporada > 2100) {
+      return req.reject(400, "La temporada debe ser un anio valido");
+    }
+
+    const existentes = await SELECT.from(Aves)
+      .columns("ID")
+      .where({
+        usuario_ID: usuarioId,
+        cintillo,
+        colorCintillo,
+        temporada,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    const duplicado = existentes.find((ave) => !aveIdExcluir || ave.ID !== aveIdExcluir);
+    if (duplicado) {
+      return req.reject(409, `Ya existe un pollito con cintillo ${cintillo}, color ${colorCintillo} y temporada ${temporada}`);
+    }
+
+    data.cintillo = cintillo;
+    data.colorCintillo = colorCintillo;
+    data.temporada = temporada;
+    data.etapaVida = "POLLITO";
+    data.cria = true;
+    data.padrote = false;
+    data.aptoReproduccion = false;
+    data.estado = data.estado || "ACTIVO";
+    data.categoria = data.categoria || "BUENO";
+    data.tipoAve = data.tipoAve || "Pollito";
+    data.placa = data.placa || generarPlacaPollito(data);
+  }
+
   // Validar datos de ave antes de crear
   this.before("CREATE", "Aves", async (req) => {
-    const { placa, fechaNacimiento, padre, madre } = req.data;
+    const { fechaNacimiento, padre, madre } = req.data;
+
+    await validarIdentificacionPollito(req, req.data);
+    const { placa } = req.data;
+
+    if (!placa) {
+      return req.error(400, "La placa es requerida");
+    }
 
     // Validar placa única
     const existePlaca = await SELECT.one.from(Aves).where({ placa });
@@ -646,6 +833,25 @@ module.exports = cds.service.impl(async function () {
       req.data.edad = Math.floor(
         (hoy - nacimiento) / (365.25 * 24 * 60 * 60 * 1000),
       );
+    }
+  });
+
+  this.before("UPDATE", "Aves", async (req) => {
+    const aveId = req.params?.[0]?.ID;
+    const actual = aveId ? await SELECT.one.from(Aves).where({ ID: aveId }) : null;
+    const dataCompleta = { ...(actual || {}), ...req.data };
+
+    await validarIdentificacionPollito(req, dataCompleta, aveId);
+
+    if (dataCompleta.etapaVida === "POLLITO") {
+      req.data.cintillo = dataCompleta.cintillo;
+      req.data.colorCintillo = dataCompleta.colorCintillo;
+      req.data.temporada = dataCompleta.temporada;
+      req.data.etapaVida = "POLLITO";
+      req.data.cria = true;
+      req.data.padrote = false;
+      req.data.aptoReproduccion = false;
+      req.data.placa = dataCompleta.placa || generarPlacaPollito(dataCompleta);
     }
   });
 
@@ -1519,27 +1725,27 @@ module.exports = cds.service.impl(async function () {
     try {
       console.log("BODY:", req.data);
 
-      const lineaAveId = req.data.lineaAveId;
+      const aveId = req.data.aveId;
 
-      if (!lineaAveId) {
+      if (!aveId) {
         return req.reject(400, "El ID es obligatorio");
       }
 
-      const ave = await SELECT.one.from(LineaAves).where({ ID: lineaAveId });
+      const ave = await SELECT.one.from(Aves).where({ ID: aveId });
 
       if (!ave) {
-        return req.reject(404, "Línea de ave no encontrada");
+        return req.reject(404, "Ave no encontrada");
       }
 
-      await UPDATE(LineaAves)
+      await UPDATE(Aves)
         .set({
           estado: "ELIMINADO",
         })
-        .where({ ID: lineaAveId });
+        .where({ ID: aveId });
 
       return {
         success: true,
-        message: "Línea de ave eliminada correctamente",
+        message: "Ave eliminada correctamente",
       };
     } catch (error) {
       console.error("ERROR BACKEND:", error);
@@ -1762,14 +1968,10 @@ module.exports = cds.service.impl(async function () {
     const { Ave, Incubacion, IncubacionDetalle, LineaAve } =
       cds.entities("ave.combatiente");
 
-    console.log("imprimir req: " + JSON.stringify(req));
-    
     const usuarioId =
       req.jwtUser?.ID ||
       req.jwtUser?.id ||
       req.user?.id;
-
-    console.log("imprimir userId: " + JSON.stringify(usuarioId));
 
     if (!usuarioId) {
       return req.reject(401, "No se pudo identificar el usuario logueado.");
@@ -1813,14 +2015,21 @@ module.exports = cds.service.impl(async function () {
     const totalLineas = await SELECT.from(LineaAve)
       .where({
         usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADA" }
+        estado: { "!=": "ELIMINADO" }
       })
       .columns("count(*) as total");
 
     const totalPlanes = await SELECT.from(PlanesCruces)
       .where({
         usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADA" }
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const totalPollitos = await SELECT.from(Crias)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
       })
       .columns("count(*) as total");
 
@@ -1854,6 +2063,7 @@ module.exports = cds.service.impl(async function () {
       incubacionesRecientes: recientes || [],
       totalLineas: totalLineas?.[0]?.total || 0,
       totalPlanes: totalPlanes?.[0]?.total || 0,
+      totalPollitos: totalPollitos?.[0]?.total || 0
     };
   });
 
@@ -1966,52 +2176,10 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
-  this.before("READ", Incubaciones, (req) => {
-    const userId = req.jwtUser && req.jwtUser.id;
-    console.log("imprimir req: " + JSON.stringify(req));
-    console.log("imprimir userId: " + JSON.stringify(userId));
-
-    if (!userId) return;
-
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
-    }
-
-    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
-  });
-
-  this.before("READ", PlanesCruces, (req) => {
-    const userId = req.jwtUser && req.jwtUser.id;
-    console.log("imprimir req: " + JSON.stringify(req));
-    console.log("imprimir userId: " + JSON.stringify(userId));
-
-    if (!userId) return;
-
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
-    }
-
-    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
-  });
-
-  this.before("READ", LineasAves, (req) => {
-    const userId = req.jwtUser && req.jwtUser.id;
-    console.log("imprimir req: " + JSON.stringify(req));
-    console.log("imprimir userId: " + JSON.stringify(userId));
-
-    if (!userId) return;
-
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
-    }
-
-    req.query.SELECT.where.push({ ref: ["usuario_ID"] }, "=", { val: userId });
-  });
+  this.before("READ", Incubaciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", IncubacionDetalles, (req) => agregarFiltroUsuario(req));
+  this.before("READ", PlanesCruces, (req) => agregarFiltroUsuario(req));
+  this.before("READ", LineasAves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", EvaluacionesAves, (req) => agregarFiltroUsuario(req));
 
 });
