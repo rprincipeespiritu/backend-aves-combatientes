@@ -90,6 +90,7 @@ service AveCombatienteService {
     //========================================
 
     entity Usuarios            as projection on combatiente.Usuario;
+    entity Suscripciones       as projection on combatiente.Suscripcion;
 
     entity Roles               as projection on combatiente.Rol;
 
@@ -290,6 +291,37 @@ service AveCombatienteService {
 
     action   restablecerPassword(token: String,
                                  newPassword: String)                                                                                                   returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   obtenerSuscripcionActual()                                                                                                                 returns {
+        tieneSuscripcion  : Boolean;
+        ID                 : UUID;
+        plan               : String;
+        estado             : String;
+        fechaInicio        : Date;
+        fechaFin           : Date;
+        diasRestantes      : Integer;
+        maxAves            : Integer;
+        maxPollitos        : Integer;
+        maxIncubaciones    : Integer;
+        precioMensual      : Decimal(10, 2);
+        moneda             : String;
+        totalAves          : Integer;
+        totalPollitos      : Integer;
+        totalIncubaciones  : Integer;
+        porcentajeUsoAves  : Decimal(5, 2);
+        mensaje            : String;
+    };
+
+    action   activarSuscripcion(plan: String,
+                                meses: Integer)                                                                                                        returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   cancelarSuscripcion()                                                                                                                     returns {
         success : Boolean;
         message : String;
     };
