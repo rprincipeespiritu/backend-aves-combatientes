@@ -35,6 +35,7 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ", "CREATE", "UPDATE", "DELETE"],
     FotosPelea: ["READ", "CREATE", "UPDATE", "DELETE"],
     Usuarios: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Suscripciones: ["READ", "CREATE", "UPDATE", "DELETE"],
     Roles: ["READ", "CREATE", "UPDATE", "DELETE"],
     Historial: ["READ"],
   },
@@ -58,6 +59,7 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ", "CREATE", "UPDATE", "DELETE"],
     FotosPelea: ["READ", "CREATE"],
     Usuarios: [],
+    Suscripciones: ["READ", "UPDATE"],
     Roles: [],
     Historial: [],
   },
@@ -81,6 +83,7 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ"],
     FotosPelea: [],
     Usuarios: [],
+    Suscripciones: ["READ"],
     Roles: [],
     Historial: [],
   },
@@ -104,6 +107,7 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ"],
     FotosPelea: ["READ"],
     Usuarios: [],
+    Suscripciones: ["READ"],
     Roles: [],
     Historial: [],
   },
@@ -198,6 +202,7 @@ module.exports = cds.service.impl(async function () {
     Transacciones,
     Usuario,
     Rol,
+    Suscripciones,
     LineasAves,
     PlanesCruces,
     EvaluacionesAves,
@@ -217,6 +222,157 @@ module.exports = cds.service.impl(async function () {
     }
 
     req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
+  }
+
+  const PLANES_SUSCRIPCION = {
+    PRUEBA: {
+      dias: 30,
+      maxAves: 100,
+      maxPollitos: 200,
+      maxIncubaciones: 50,
+      precioMensual: 0,
+    },
+    BASICO: {
+      dias: 30,
+      maxAves: 100,
+      maxPollitos: 200,
+      maxIncubaciones: 50,
+      precioMensual: 19,
+    },
+    PRO: {
+      dias: 30,
+      maxAves: 500,
+      maxPollitos: 1000,
+      maxIncubaciones: 250,
+      precioMensual: 79,
+    },
+    PREMIUM: {
+      dias: 30,
+      maxAves: 999999,
+      maxPollitos: 999999,
+      maxIncubaciones: 999999,
+      precioMensual: 149,
+    },
+  };
+
+  function fechaISO(date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function sumarDias(date, dias) {
+    const result = new Date(date);
+    result.setDate(result.getDate() + dias);
+    return result;
+  }
+
+  function calcularDiasRestantes(fechaFin) {
+    if (!fechaFin) return 0;
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const fin = new Date(fechaFin);
+    fin.setHours(0, 0, 0, 0);
+    return Math.ceil((fin.getTime() - hoy.getTime()) / (24 * 60 * 60 * 1000));
+  }
+
+  async function obtenerSuscripcionUsuario(usuarioId) {
+    const suscripciones = await SELECT
+      .from(Suscripciones)
+      .where({ usuario_ID: usuarioId })
+      .orderBy("createdAt desc");
+
+    if (!suscripciones.length) return null;
+
+    const suscripcion = suscripciones[0];
+    const diasRestantes = calcularDiasRestantes(suscripcion.fechaFin);
+
+    if (suscripciones.length > 1) {
+      await DELETE.from(Suscripciones)
+        .where({ usuario_ID: usuarioId })
+        .and({ ID: { "!=": suscripcion.ID } });
+    }
+
+    if (["ACTIVA", "CANCELADA"].includes(suscripcion.estado) && diasRestantes < 0) {
+      await UPDATE(Suscripciones)
+        .set({ estado: "VENCIDA" })
+        .where({ ID: suscripcion.ID });
+      suscripcion.estado = "VENCIDA";
+    }
+
+    return suscripcion;
+  }
+
+  async function validarSuscripcion(req, entidadServicio) {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return;
+
+    const accionesSuscripcion = [
+      "obtenerSuscripcionActual",
+      "activarSuscripcion",
+      "cancelarSuscripcion",
+      "logout",
+    ];
+
+    if (accionesSuscripcion.includes(req.event)) return;
+
+    const esLectura = req.event === "READ" || req.event === "obtenerDashboard";
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+
+    if (!suscripcion) {
+      if (!esLectura) {
+        return req.reject(402, "Debes activar tu plan de prueba para continuar.");
+      }
+      return;
+    }
+
+    const diasRestantes = calcularDiasRestantes(suscripcion.fechaFin);
+
+    const tieneAccesoVigente = ["ACTIVA", "CANCELADA"].includes(suscripcion.estado) && diasRestantes >= 0;
+
+    if (!tieneAccesoVigente && !esLectura) {
+      return req.reject(402, "Tu suscripcion esta vencida. Renueva tu plan para registrar o modificar informacion.");
+    }
+
+    if (req.event !== "CREATE") return;
+
+    if (entidadServicio === "Aves") {
+      const [res] = await SELECT.from(Aves)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+          etapaVida: { "!=": "POLLITO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxAves || 0)) {
+        return req.reject(402, "Alcanzaste el limite de aves adultas de tu plan.");
+      }
+    }
+
+    if (entidadServicio === "Crias") {
+      const [res] = await SELECT.from(Crias)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxPollitos || 0)) {
+        return req.reject(402, "Alcanzaste el limite de aves jovenes de tu plan.");
+      }
+    }
+
+    if (entidadServicio === "Incubaciones") {
+      const [res] = await SELECT.from(Incubaciones)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxIncubaciones || 0)) {
+        return req.reject(402, "Alcanzaste el limite de incubaciones de tu plan.");
+      }
+    }
   }
 
   // Intercepta TODAS las operaciones del servicio
@@ -293,6 +449,8 @@ module.exports = cds.service.impl(async function () {
       FotosPelea: "FotosPelea",
       Usuario: "Usuarios",
       Usuarios: "Usuarios",
+      Suscripcion: "Suscripciones",
+      Suscripciones: "Suscripciones",
       Rol: "Roles",
       Roles: "Roles",
       HistorialCambios: "Historial",
@@ -320,6 +478,8 @@ module.exports = cds.service.impl(async function () {
         `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
       );
     }
+
+    await validarSuscripcion(req, entidadServicio);
   });
 
   this.on("registrarRoles", async (req) => {
@@ -395,7 +555,7 @@ module.exports = cds.service.impl(async function () {
         "apellido",
         "rol_ID",
       )
-      .where({ email });
+      .where({ email: emailNormalizado });
 
     if (user) {
       return req.error(409, "El email ya está registrado");
@@ -436,7 +596,7 @@ module.exports = cds.service.impl(async function () {
       username: usernameNormalizado,
       nombre: nombre,
       apellido: apellido,
-      email: email,
+      email: emailNormalizado,
       password: passwordHash,
       telefono: telefono,
       direccion: direccion,
@@ -537,7 +697,7 @@ module.exports = cds.service.impl(async function () {
         "apellido",
         "rol_ID",
       )
-      .where({ email });
+      .where({ email: email.trim().toLowerCase() });
 
     if (!user) {
       return req.error(401, "Usuario no registrado");
@@ -609,6 +769,156 @@ module.exports = cds.service.impl(async function () {
       message: "Sesión cerrada exitosamente",
     };
   });
+  async function construirResumenSuscripcion(usuarioId) {
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+
+    if (!suscripcion) {
+      return {
+        tieneSuscripcion: false,
+        ID: null,
+        plan: "",
+        estado: "",
+        fechaInicio: null,
+        fechaFin: null,
+        diasRestantes: 0,
+        maxAves: 0,
+        maxPollitos: 0,
+        maxIncubaciones: 0,
+        precioMensual: 0,
+        moneda: "PEN",
+        totalAves: 0,
+        totalPollitos: 0,
+        totalIncubaciones: 0,
+        porcentajeUsoAves: 0,
+        mensaje: "Aun no tienes una suscripcion activa.",
+      };
+    }
+
+    const diasRestantes = Math.max(calcularDiasRestantes(suscripcion.fechaFin), 0);
+    const [totalAvesRes] = await SELECT.from(Aves)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+        etapaVida: { "!=": "POLLITO" },
+      })
+      .columns("count(*) as total");
+    const [totalPollitosRes] = await SELECT.from(Crias)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      })
+      .columns("count(*) as total");
+    const [totalIncubacionesRes] = await SELECT.from(Incubaciones)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      })
+      .columns("count(*) as total");
+
+    const totalAves = Number(totalAvesRes?.total || 0);
+    const maxAves = Number(suscripcion.maxAves || 0);
+    const porcentajeUsoAves = maxAves > 0
+      ? Number(((totalAves / maxAves) * 100).toFixed(2))
+      : 0;
+
+    return {
+      tieneSuscripcion: true,
+      ID: suscripcion.ID,
+      plan: suscripcion.plan,
+      estado: suscripcion.estado,
+      fechaInicio: suscripcion.fechaInicio,
+      fechaFin: suscripcion.fechaFin,
+      diasRestantes,
+      maxAves: suscripcion.maxAves,
+      maxPollitos: suscripcion.maxPollitos,
+      maxIncubaciones: suscripcion.maxIncubaciones,
+      precioMensual: suscripcion.precioMensual,
+      moneda: suscripcion.moneda,
+      totalAves,
+      totalPollitos: Number(totalPollitosRes?.total || 0),
+      totalIncubaciones: Number(totalIncubacionesRes?.total || 0),
+      porcentajeUsoAves,
+      mensaje: diasRestantes > 0 && suscripcion.estado === "CANCELADA"
+        ? `Tu suscripcion fue cancelada, pero puedes usarla hasta el ${suscripcion.fechaFin}.`
+        : diasRestantes > 0
+          ? `Tu plan ${suscripcion.plan} vence en ${diasRestantes} dias.`
+          : "Tu suscripcion esta vencida.",
+    };
+  }
+
+  this.on("obtenerSuscripcionActual", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+    return construirResumenSuscripcion(usuarioId);
+  });
+
+  this.on("activarSuscripcion", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const plan = String(req.data.plan || "").trim().toUpperCase();
+    const meses = Math.max(Number(req.data.meses || 1), 1);
+
+    if (!PLANES_SUSCRIPCION[plan]) {
+      return req.reject(400, "Debe seleccionar un plan valido: PRUEBA, BASICO, PRO o PREMIUM.");
+    }
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    const config = PLANES_SUSCRIPCION[plan];
+    const inicio = new Date();
+    const dias = plan === "PRUEBA" ? config.dias : config.dias * meses;
+    const fin = sumarDias(inicio, dias);
+    const datosSuscripcion = {
+      plan,
+      estado: "ACTIVA",
+      fechaInicio: fechaISO(inicio),
+      fechaFin: fechaISO(fin),
+      maxAves: config.maxAves,
+      maxPollitos: config.maxPollitos,
+      maxIncubaciones: config.maxIncubaciones,
+      precioMensual: config.precioMensual,
+      moneda: "PEN",
+      observaciones: plan === "PRUEBA" ? "Plan de prueba activado" : `Plan ${plan} activado por ${meses} mes(es)`,
+    };
+
+    if (actual) {
+      await UPDATE(Suscripciones)
+        .set(datosSuscripcion)
+        .where({ ID: actual.ID });
+    } else {
+      await INSERT.into(Suscripciones).entries({
+        ID: crypto.randomUUID(),
+        usuario_ID: usuarioId,
+        ...datosSuscripcion,
+      });
+    }
+
+    return {
+      success: true,
+      message: `Suscripcion ${plan} activada correctamente.`,
+    };
+  });
+
+  this.on("cancelarSuscripcion", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    if (!actual) return req.reject(404, "No hay una suscripcion para cancelar.");
+
+    await UPDATE(Suscripciones)
+      .set({
+        estado: "CANCELADA",
+        observaciones: "Suscripcion cancelada por el usuario",
+      })
+      .where({ ID: actual.ID });
+
+    return {
+      success: true,
+      message: "Suscripcion cancelada correctamente.",
+    };
+  });
+
   //==========================================
   // USUARIOS - Hash password
   //==========================================
@@ -631,6 +941,7 @@ module.exports = cds.service.impl(async function () {
 
   this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
   this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Suscripciones, (req) => agregarFiltroUsuario(req));
   this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
   this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
   this.before("READ", LineasAvesActivas, (req) => agregarFiltroUsuario(req));

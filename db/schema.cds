@@ -445,6 +445,32 @@ entity Usuario : cuid, managed {
 
     IncubacionesDetalle  : Association to many IncubacionDetalle
                                on IncubacionesDetalle.usuario = $self;
+
+    suscripciones        : Association to many Suscripcion
+                               on suscripciones.usuario = $self;
+}
+
+entity Suscripcion : cuid, managed {
+    usuario       : Association to Usuario @mandatory;
+    plan          : String(20) default 'PRUEBA' @assert.enum: {
+        PRUEBA,
+        BASICO,
+        PRO,
+        PREMIUM
+    };
+    estado        : String(20) default 'ACTIVA' @assert.enum: {
+        ACTIVA,
+        VENCIDA,
+        CANCELADA
+    };
+    fechaInicio   : Date @mandatory;
+    fechaFin      : Date @mandatory;
+    maxAves       : Integer default 25;
+    maxPollitos   : Integer default 50;
+    maxIncubaciones : Integer default 10;
+    precioMensual : Decimal(10, 2) default 0;
+    moneda        : String(3) default 'PEN';
+    observaciones : String(500);
 }
 
 entity Rol : cuid {
