@@ -459,6 +459,7 @@ entity Suscripcion : cuid, managed {
         PREMIUM
     };
     estado        : String(20) default 'ACTIVA' @assert.enum: {
+        PENDIENTE,
         ACTIVA,
         VENCIDA,
         CANCELADA
@@ -470,6 +471,13 @@ entity Suscripcion : cuid, managed {
     maxIncubaciones : Integer default 10;
     precioMensual : Decimal(10, 2) default 0;
     moneda        : String(3) default 'PEN';
+    proveedorPago : String(30);
+    mercadoPagoPreapprovalId : String(80);
+    mercadoPagoExternalReference : String(160);
+    mercadoPagoStatus : String(40);
+    mercadoPagoInitPoint : String(1000);
+    mercadoPagoSandboxInitPoint : String(1000);
+    fechaUltimoPago : DateTime;
     observaciones : String(500);
 }
 
