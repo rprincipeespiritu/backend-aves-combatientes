@@ -321,6 +321,14 @@ service AveCombatienteService {
         message : String;
     };
 
+    action   crearCheckoutMercadoPago(plan: String)                                                                                                    returns {
+        success          : Boolean;
+        message          : String;
+        initPoint        : String;
+        sandboxInitPoint : String;
+        preapprovalId    : String;
+    };
+
     action   cancelarSuscripcion()                                                                                                                     returns {
         success : Boolean;
         message : String;

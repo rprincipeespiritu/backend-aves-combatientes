@@ -3,6 +3,13 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const sgMail = require("@sendgrid/mail");
+const {
+  PLANES_SUSCRIPCION,
+  construirDatosSuscripcion,
+  fechaISO,
+  getPlanConfig,
+  sumarDias,
+} = require("./subscription-config");
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
@@ -224,47 +231,6 @@ module.exports = cds.service.impl(async function () {
     req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
   }
 
-  const PLANES_SUSCRIPCION = {
-    PRUEBA: {
-      dias: 30,
-      maxAves: 100,
-      maxPollitos: 200,
-      maxIncubaciones: 50,
-      precioMensual: 0,
-    },
-    BASICO: {
-      dias: 30,
-      maxAves: 100,
-      maxPollitos: 200,
-      maxIncubaciones: 50,
-      precioMensual: 19,
-    },
-    PRO: {
-      dias: 30,
-      maxAves: 500,
-      maxPollitos: 1000,
-      maxIncubaciones: 250,
-      precioMensual: 79,
-    },
-    PREMIUM: {
-      dias: 30,
-      maxAves: 999999,
-      maxPollitos: 999999,
-      maxIncubaciones: 999999,
-      precioMensual: 149,
-    },
-  };
-
-  function fechaISO(date) {
-    return date.toISOString().slice(0, 10);
-  }
-
-  function sumarDias(date, dias) {
-    const result = new Date(date);
-    result.setDate(result.getDate() + dias);
-    return result;
-  }
-
   function calcularDiasRestantes(fechaFin) {
     if (!fechaFin) return 0;
     const hoy = new Date();
@@ -291,7 +257,7 @@ module.exports = cds.service.impl(async function () {
         .and({ ID: { "!=": suscripcion.ID } });
     }
 
-    if (["ACTIVA", "CANCELADA"].includes(suscripcion.estado) && diasRestantes < 0) {
+    if (["ACTIVA", "CANCELADA", "PENDIENTE"].includes(suscripcion.estado) && diasRestantes < 0) {
       await UPDATE(Suscripciones)
         .set({ estado: "VENCIDA" })
         .where({ ID: suscripcion.ID });
@@ -308,6 +274,7 @@ module.exports = cds.service.impl(async function () {
     const accionesSuscripcion = [
       "obtenerSuscripcionActual",
       "activarSuscripcion",
+      "crearCheckoutMercadoPago",
       "cancelarSuscripcion",
       "logout",
     ];
@@ -864,20 +831,13 @@ module.exports = cds.service.impl(async function () {
     }
 
     const actual = await obtenerSuscripcionUsuario(usuarioId);
-    const config = PLANES_SUSCRIPCION[plan];
     const inicio = new Date();
-    const dias = plan === "PRUEBA" ? config.dias : config.dias * meses;
-    const fin = sumarDias(inicio, dias);
+    const config = PLANES_SUSCRIPCION[plan];
+    const fin = sumarDias(inicio, plan === "PRUEBA" ? config.dias : config.dias * meses);
     const datosSuscripcion = {
-      plan,
-      estado: "ACTIVA",
-      fechaInicio: fechaISO(inicio),
+      ...construirDatosSuscripcion(plan, "ACTIVA", inicio),
       fechaFin: fechaISO(fin),
-      maxAves: config.maxAves,
-      maxPollitos: config.maxPollitos,
-      maxIncubaciones: config.maxIncubaciones,
-      precioMensual: config.precioMensual,
-      moneda: "PEN",
+      proveedorPago: plan === "PRUEBA" ? null : "MANUAL",
       observaciones: plan === "PRUEBA" ? "Plan de prueba activado" : `Plan ${plan} activado por ${meses} mes(es)`,
     };
 
@@ -899,6 +859,94 @@ module.exports = cds.service.impl(async function () {
     };
   });
 
+  this.on("crearCheckoutMercadoPago", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    if (!accessToken) {
+      return req.reject(500, "Falta configurar MERCADOPAGO_ACCESS_TOKEN en el backend.");
+    }
+
+    const planData = getPlanConfig(req.data.plan);
+    if (!planData || planData.plan === "PRUEBA") {
+      return req.reject(400, "Debe seleccionar un plan pagado valido: BASICO, PRO o PREMIUM.");
+    }
+
+    const usuario = await SELECT.one
+      .from(Usuario)
+      .columns("ID", "email", "nombre", "apellido")
+      .where({ ID: usuarioId });
+
+    if (!usuario?.email) {
+      return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
+    }
+
+    const { plan, config } = planData;
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+    const externalReference = `aves:${usuarioId}:${plan}:${crypto.randomUUID()}`;
+    const payload = {
+      reason: `Aves Combatientes - Plan ${plan}`,
+      external_reference: externalReference,
+      payer_email: usuario.email,
+      back_url: `${frontendUrl}#/suscripcion`,
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: "months",
+        transaction_amount: Number(config.precioMensual),
+        currency_id: "PEN",
+      },
+      status: "pending",
+    };
+
+    const response = await fetch("https://api.mercadopago.com/preapproval", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Mercado Pago create preapproval error:", data);
+      return req.reject(502, data?.message || "Mercado Pago no pudo crear el checkout.");
+    }
+
+    const datosSuscripcion = {
+      ...construirDatosSuscripcion(plan, "PENDIENTE"),
+      proveedorPago: "MERCADO_PAGO",
+      mercadoPagoPreapprovalId: data.id,
+      mercadoPagoExternalReference: externalReference,
+      mercadoPagoStatus: data.status || "pending",
+      mercadoPagoInitPoint: data.init_point,
+      mercadoPagoSandboxInitPoint: data.sandbox_init_point,
+      observaciones: `Checkout Mercado Pago creado para plan ${plan}`,
+    };
+
+    if (actual) {
+      await UPDATE(Suscripciones)
+        .set(datosSuscripcion)
+        .where({ ID: actual.ID });
+    } else {
+      await INSERT.into(Suscripciones).entries({
+        ID: crypto.randomUUID(),
+        usuario_ID: usuarioId,
+        ...datosSuscripcion,
+      });
+    }
+
+    return {
+      success: true,
+      message: "Checkout de Mercado Pago creado correctamente.",
+      initPoint: data.init_point,
+      sandboxInitPoint: data.sandbox_init_point,
+      preapprovalId: data.id,
+    };
+  });
+
   this.on("cancelarSuscripcion", async (req) => {
     const usuarioId = req.jwtUser?.id;
     if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
@@ -906,9 +954,25 @@ module.exports = cds.service.impl(async function () {
     const actual = await obtenerSuscripcionUsuario(usuarioId);
     if (!actual) return req.reject(404, "No hay una suscripcion para cancelar.");
 
+    if (actual.proveedorPago === "MERCADO_PAGO" && actual.mercadoPagoPreapprovalId && process.env.MERCADOPAGO_ACCESS_TOKEN) {
+      try {
+        await fetch(`https://api.mercadopago.com/preapproval/${actual.mercadoPagoPreapprovalId}`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status: "cancelled" }),
+        });
+      } catch (error) {
+        console.error("No se pudo cancelar en Mercado Pago:", error);
+      }
+    }
+
     await UPDATE(Suscripciones)
       .set({
         estado: "CANCELADA",
+        mercadoPagoStatus: actual.proveedorPago === "MERCADO_PAGO" ? "cancelled" : actual.mercadoPagoStatus,
         observaciones: "Suscripcion cancelada por el usuario",
       })
       .where({ ID: actual.ID });

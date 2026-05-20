@@ -20,6 +20,24 @@ File or Folder | Purpose
 - Start adding content, for example, a [db/schema.cds](db/schema.cds).
 
 
+## Mercado Pago
+
+Para activar suscripciones reales configura estas variables en el ambiente del backend:
+
+```env
+MERCADOPAGO_ACCESS_TOKEN=TEST-...
+MERCADOPAGO_WEBHOOK_SECRET=...
+FRONTEND_URL=http://localhost:8080/index.html
+```
+
+En Mercado Pago registra esta URL de notificacion cuando el backend este publicado:
+
+```text
+https://tu-dominio.com/api/mercadopago/webhook
+```
+
+El checkout se crea desde la accion `crearCheckoutMercadoPago` del servicio CAP. El webhook confirma el estado de la preaprobacion y actualiza la suscripcion local a `PENDIENTE`, `ACTIVA`, `VENCIDA` o `CANCELADA`.
+
 ## Learn More
 
 Learn more at https://cap.cloud.sap/docs/get-started/.
