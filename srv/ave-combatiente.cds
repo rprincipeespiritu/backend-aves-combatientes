@@ -38,6 +38,7 @@ service AveCombatienteService {
     entity LineasAves          as projection on combatiente.LineaAve;
     entity PlanesCruces        as projection on combatiente.PlanCruce;
     entity EvaluacionesAves    as projection on combatiente.EvaluacionAve;
+    entity EvaluacionesPleito  as projection on combatiente.EvaluacionPleito;
 
     ////@odata.draft.enabled
     @cds.redirection.target
@@ -237,6 +238,42 @@ service AveCombatienteService {
                             resultado: String,
                             observaciones: String)                                                                                                      returns Peleas;
 
+    action   prepararCargaVideoCombate(peleaId: String,
+                                       nombreArchivo: String,
+                                       mimeType: String,
+                                       tamanioBytes: Integer)                                                                                            returns {
+        success        : Boolean;
+        message        : String;
+        uploadUrl      : String;
+        videoUrl       : String;
+        storageProvider: String;
+        storageBucket  : String;
+        storageKey     : String;
+        estadoCarga    : String;
+    };
+
+    action   prepararCargaArchivoAve(aveId: String,
+                                     nombreArchivo: String,
+                                     mimeType: String,
+                                     tamanioBytes: Integer,
+                                     tipo: String)                                                                                                      returns {
+        success        : Boolean;
+        message        : String;
+        uploadUrl      : String;
+        fileUrl        : String;
+        storageProvider: String;
+        storageBucket  : String;
+        storageKey     : String;
+        nombreArchivo  : String;
+        mimeType       : String;
+        tipo           : String;
+    };
+
+    action   obtenerUrlLecturaS3(fileUrl: String)                                                                                                      returns {
+        success     : Boolean;
+        downloadUrl : String;
+    };
+
     // Generar reporte de ave
     action   generarReporteAve(aveId: String)                                                                                                           returns LargeString; // PDF Base64
 
@@ -350,6 +387,7 @@ service AveCombatienteService {
             fechaIncubacion : Timestamp;
         };
         totalLineas             : Integer;
+        totalCombates           : Integer;
     };
 
     action   analizarCrucePorParentesco(macho_ID: UUID,

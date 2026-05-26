@@ -29,6 +29,38 @@ const PLANES_SUSCRIPCION = {
   },
 };
 
+const MODULOS_POR_PLAN = {
+  PRUEBA: [
+    "Aves",
+    "Crias",
+    "Incubaciones",
+    "IncubacionDetalles",
+    "Suscripciones",
+  ],
+  BASICO: [
+    "Aves",
+    "Crias",
+    "Incubaciones",
+    "IncubacionDetalles",
+    "Suscripciones",
+  ],
+  PRO: [
+    "Aves",
+    "Crias",
+    "Incubaciones",
+    "IncubacionDetalles",
+    "LineasAves",
+    "PlanesCruces",
+    "EvaluacionesAves",
+    "EvaluacionesPleito",
+    "Suscripciones",
+    "Historial",
+  ],
+  PREMIUM: [
+    "*",
+  ],
+};
+
 function fechaISO(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -65,6 +97,7 @@ function construirDatosSuscripcion(plan, estado = "ACTIVA", fechaBase = new Date
 }
 
 module.exports = {
+  MODULOS_POR_PLAN,
   PLANES_SUSCRIPCION,
   construirDatosSuscripcion,
   fechaISO,

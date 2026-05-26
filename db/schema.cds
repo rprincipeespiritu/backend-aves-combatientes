@@ -189,13 +189,23 @@ entity Pesaje : cuid, managed {
 //============================================
 
 entity Pelea : cuid, managed {
+    // Combatiente A: siempre pertenece al usuario de la app
     ave                 : Association to Ave @mandatory;
+    // Combatiente B: se usa cuando ambos combatientes pertenecen al usuario
+    combatienteB        : Association to Ave;
+    usuario             : Association to Usuario;
     fecha               : DateTime           @mandatory;
+    tipoCombate         : String(20) default 'PRUEBA' @assert.enum: {
+        OFICIAL,
+        PRUEBA
+    };
+    ambosPropios        : Boolean default true;
     lugar               : String(200);
     evento              : String(200);
 
-    // Oponente
+    // Rival externo: se usa cuando el segundo combatiente no pertenece al usuario
     nombreOponente      : String(100);
+    propietarioOponente : String(120);
     procedenciaOponente : String(200);
 
     // Resultado
@@ -219,6 +229,13 @@ entity Pelea : cuid, managed {
 
     // Medios
     videoUrl            : String(500);
+    videoStorageProvider: String(30);
+    videoStorageBucket  : String(120);
+    videoStorageKey     : String(500);
+    videoNombreArchivo  : String(255);
+    videoMimeType       : String(120);
+    videoSizeBytes      : Integer;
+    videoEstadoCarga    : String(30);
     fotos               : Composition of many FotoPelea
                               on fotos.pelea = $self;
 }
@@ -229,6 +246,25 @@ entity FotoPelea : cuid, managed {
     descripcion   : String(500);
     urlSharepoint : String(500);
     thumbnailUrl  : String(500);
+}
+
+entity EvaluacionPleito : cuid, managed {
+    ave             : Association to Ave @mandatory;
+    usuario         : Association to Usuario;
+    fecha           : Date               @mandatory;
+    calificacion    : String(20)         @assert.enum: {
+        PESIMO,
+        REGULAR,
+        BUENO,
+        EXCELENTE,
+        EXTRAORDINARIO
+    };
+    bravura         : Integer;
+    tecnica         : Integer;
+    resistencia     : Integer;
+    condicionFisica : Integer;
+    observaciones   : LargeString;
+    recomendacion   : LargeString;
 }
 
 //============================================

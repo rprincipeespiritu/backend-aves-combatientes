@@ -3,7 +3,10 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const sgMail = require("@sendgrid/mail");
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const {
+  MODULOS_POR_PLAN,
   PLANES_SUSCRIPCION,
   construirDatosSuscripcion,
   fechaISO,
@@ -14,6 +17,18 @@ const {
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "1h";
+const VIDEO_COMBATE_MAX_BYTES = Number(process.env.COMBATE_VIDEO_MAX_BYTES || 524288000);
+const VIDEO_STORAGE_PROVIDER = process.env.COMBATE_VIDEO_PROVIDER || "AWS_S3";
+const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || "";
+const AWS_S3_COMBATES_BUCKET = process.env.AWS_S3_COMBATES_BUCKET || AWS_S3_BUCKET;
+const AWS_S3_AVES_BUCKET = process.env.AWS_S3_AVES_BUCKET || AWS_S3_BUCKET;
+const AWS_S3_REGION =
+  process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+const AWS_S3_PRESIGN_EXPIRES_SECONDS = Number(
+  process.env.AWS_S3_PRESIGN_EXPIRES_SECONDS || 900,
+);
+const ARCHIVO_AVE_MAX_BYTES = Number(process.env.ARCHIVO_AVE_MAX_BYTES || 104857600);
+const s3Client = new S3Client({ region: AWS_S3_REGION });
 
 const nodemailer = require("nodemailer");
 
@@ -28,6 +43,7 @@ const PERMISOS_ROL = {
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
     EvaluacionesAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE", "DELETE"],
     PlanesCruces: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -50,9 +66,10 @@ const PERMISOS_ROL = {
     Aves: ["READ", "CREATE", "UPDATE"],
     Crias: ["READ", "CREATE", "UPDATE"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
-    Peleas: ["READ", "CREATE", "UPDATE"],
+    Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE"],
     EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE"],
     PlanesCruces: ["READ", "CREATE", "UPDATE"],
     Tratamientos: ["READ"],
@@ -77,6 +94,7 @@ const PERMISOS_ROL = {
     Peleas: ["READ"],
     Incubaciones: ["READ"],
     EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE"],
     LineasAves: ["READ"],
     PlanesCruces: ["READ"],
     Tratamientos: ["READ", "CREATE", "UPDATE"],
@@ -101,6 +119,7 @@ const PERMISOS_ROL = {
     Peleas: ["READ"],
     Incubaciones: ["READ"],
     EvaluacionesAves: ["READ"],
+    EvaluacionesPleito: ["READ"],
     LineasAves: ["READ"],
     PlanesCruces: ["READ"],
     Tratamientos: ["READ"],
@@ -131,6 +150,121 @@ const METODO_A_OPERACION = {
 function extraerEntidad(path) {
   const match = path.match(/\/api\/avecombatiente\/([A-Za-z]+)/);
   return match ? match[1] : null;
+}
+
+function normalizarNombreArchivo(nombreArchivo = "combate.mp4") {
+  return String(nombreArchivo)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
+}
+
+function esMismoId(idA, idB) {
+  return !!idA && !!idB && String(idA) === String(idB);
+}
+
+function construirUrlS3(bucket, storageKey) {
+  return `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/${storageKey}`;
+}
+
+async function crearUploadUrlS3({ bucket, storageKey, mimeType }) {
+  if (!bucket) return null;
+
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: storageKey,
+    ContentType: mimeType,
+  });
+
+  return getSignedUrl(s3Client, command, {
+    expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+  });
+}
+
+async function crearDownloadUrlS3({ bucket, storageKey }) {
+  if (!bucket) return null;
+
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: storageKey,
+  });
+
+  return getSignedUrl(s3Client, command, {
+    expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+  });
+}
+
+function obtenerObjetoDesdeUrlS3(fileUrl) {
+  const value = String(fileUrl || "");
+  const allowedBuckets = new Set(
+    [AWS_S3_BUCKET, AWS_S3_AVES_BUCKET, AWS_S3_COMBATES_BUCKET].filter(Boolean),
+  );
+
+  for (const bucket of allowedBuckets) {
+    const prefix = `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/`;
+    if (value.startsWith(prefix)) {
+      return {
+        bucket,
+        storageKey: decodeURIComponent(value.slice(prefix.length)),
+      };
+    }
+  }
+
+  return null;
+}
+
+function construirMetadataVideoCombate({ peleaId, usuarioId, nombreArchivo, mimeType }) {
+  const safeName = normalizarNombreArchivo(nombreArchivo);
+  const storageKey = [
+    "combates",
+    usuarioId || "sin-usuario",
+    peleaId,
+    `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
+  ].join("/");
+  const bucket = AWS_S3_COMBATES_BUCKET || "pendiente-configurar-bucket-s3";
+  const videoUrl = AWS_S3_COMBATES_BUCKET
+    ? construirUrlS3(bucket, storageKey)
+    : `s3://${bucket}/${storageKey}`;
+
+  return {
+    storageProvider: VIDEO_STORAGE_PROVIDER,
+    storageBucket: bucket,
+    storageKey,
+    videoUrl,
+    uploadUrl: null,
+    estadoCarga: AWS_S3_COMBATES_BUCKET ? "PENDIENTE_SUBIDA" : "PENDIENTE_CONFIGURACION",
+    mimeType,
+    nombreArchivo: safeName,
+  };
+}
+
+function construirMetadataArchivoAve({ aveId, usuarioId, nombreArchivo, mimeType, tipo }) {
+  const safeName = normalizarNombreArchivo(nombreArchivo || "archivo");
+  const tipoCarpeta = tipo === "VIDEO" ? "videos" : "fotos";
+  const storageKey = [
+    "aves",
+    usuarioId || "sin-usuario",
+    aveId,
+    tipoCarpeta,
+    `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
+  ].join("/");
+  const bucket = AWS_S3_AVES_BUCKET || "pendiente-configurar-bucket-s3";
+  const fileUrl = AWS_S3_AVES_BUCKET
+    ? construirUrlS3(bucket, storageKey)
+    : `s3://${bucket}/${storageKey}`;
+
+  return {
+    storageProvider: "AWS_S3",
+    storageBucket: bucket,
+    storageKey,
+    fileUrl,
+    uploadUrl: null,
+    mimeType,
+    nombreArchivo: safeName,
+    tipo,
+  };
 }
 
 //============================================
@@ -206,6 +340,7 @@ module.exports = cds.service.impl(async function () {
     IncubacionDetalles,
     HistorialCambios,
     FotosAve,
+    VideosAve,
     Transacciones,
     Usuario,
     Rol,
@@ -213,6 +348,7 @@ module.exports = cds.service.impl(async function () {
     LineasAves,
     PlanesCruces,
     EvaluacionesAves,
+    EvaluacionesPleito,
     IncubacionesActivas,
     AvesActivas,
     LineasAvesActivas,
@@ -238,6 +374,30 @@ module.exports = cds.service.impl(async function () {
     const fin = new Date(fechaFin);
     fin.setHours(0, 0, 0, 0);
     return Math.ceil((fin.getTime() - hoy.getTime()) / (24 * 60 * 60 * 1000));
+  }
+
+  function moduloPermitidoPorPlan(plan, entidadServicio) {
+    const modulos = MODULOS_POR_PLAN[String(plan || "").toUpperCase()] || [];
+    return modulos.includes("*") || modulos.includes(entidadServicio);
+  }
+
+  async function validarPlanPremiumMultimedia(req) {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) {
+      return req.reject(401, "No se pudo identificar el usuario actual.");
+    }
+
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+    const diasRestantes = suscripcion ? calcularDiasRestantes(suscripcion.fechaFin) : 0;
+    const tienePremium =
+      suscripcion &&
+      suscripcion.plan === "PREMIUM" &&
+      ["ACTIVA", "CANCELADA"].includes(suscripcion.estado) &&
+      diasRestantes >= 0;
+
+    if (!tienePremium) {
+      return req.reject(403, "Las fotos y videos solo estan disponibles para el plan PREMIUM.");
+    }
   }
 
   async function obtenerSuscripcionUsuario(usuarioId) {
@@ -297,6 +457,10 @@ module.exports = cds.service.impl(async function () {
 
     if (!tieneAccesoVigente && !esLectura) {
       return req.reject(402, "Tu suscripcion esta vencida. Renueva tu plan para registrar o modificar informacion.");
+    }
+
+    if (!moduloPermitidoPorPlan(suscripcion.plan, entidadServicio)) {
+      return req.reject(403, `Tu plan ${suscripcion.plan} no incluye acceso al modulo ${entidadServicio}.`);
     }
 
     if (req.event !== "CREATE") return;
@@ -428,6 +592,8 @@ module.exports = cds.service.impl(async function () {
       PlanesCruces: "PlanesCruces",
       EvaluacionAve: "EvaluacionesAves",
       EvaluacionesAves: "EvaluacionesAves",
+      EvaluacionPleito: "EvaluacionesPleito",
+      EvaluacionesPleito: "EvaluacionesPleito",
       IncubacionDetalle: "IncubacionDetalles",
       IncubacionDetalles: "IncubacionDetalles",
     };
@@ -1424,6 +1590,110 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
+  async function obtenerAveIdEvaluacionPleito(req) {
+    if (req.data?.ave_ID) return req.data.ave_ID;
+    const evaluacionId = req.params?.[0]?.ID || req.data?.ID;
+    if (!evaluacionId) return null;
+
+    const actual = await SELECT.one
+      .from(EvaluacionesPleito)
+      .columns("ave_ID")
+      .where({ ID: evaluacionId });
+
+    return actual?.ave_ID || null;
+  }
+
+  async function sincronizarCalificacionPleito(aveId) {
+    if (!aveId) return;
+
+    const [ultima] = await SELECT.from(EvaluacionesPleito)
+      .where({ ave_ID: aveId })
+      .orderBy("fecha desc", "modifiedAt desc", "createdAt desc")
+      .limit(1);
+
+    await UPDATE(Aves)
+      .set({ categoria: ultima?.calificacion || null })
+      .where({ ID: aveId });
+  }
+
+  this.before(["CREATE", "UPDATE", "DELETE"], EvaluacionesPleito, async (req) => {
+    req._evaluacionPleitoAveId = await obtenerAveIdEvaluacionPleito(req);
+
+    if (req.event === "DELETE") return;
+
+    const calificaciones = ["PESIMO", "REGULAR", "BUENO", "EXCELENTE", "EXTRAORDINARIO"];
+    if (req.data.calificacion && !calificaciones.includes(req.data.calificacion)) {
+      return req.reject(400, "La calificacion de pleito no es valida.");
+    }
+
+    const campos = ["bravura", "tecnica", "resistencia", "condicionFisica"];
+    for (const campo of campos) {
+      if (req.data[campo] === undefined || req.data[campo] === null) continue;
+      const valor = Number(req.data[campo]);
+      if (valor < 1 || valor > 10) {
+        return req.reject(400, `${campo} debe estar entre 1 y 10`);
+      }
+    }
+
+    if (req.event === "CREATE" && req.jwtUser?.id && !req.data.usuario_ID) {
+      req.data.usuario_ID = req.jwtUser.id;
+    }
+  });
+
+  this.after(["CREATE", "UPDATE", "DELETE"], EvaluacionesPleito, async (data, req) => {
+    const aveId = data?.ave_ID || req.data?.ave_ID || req._evaluacionPleitoAveId;
+    await sincronizarCalificacionPleito(aveId);
+  });
+
+  async function validarLimiteArchivosAve(req, tipoArchivo) {
+    const aveId = req.data?.ave_ID;
+    if (!aveId) {
+      return req.reject(400, "Debe indicar el ave para asociar el archivo.");
+    }
+
+    const [fotos, videos] = await Promise.all([
+      SELECT.from(FotosAve).where({ ave_ID: aveId }),
+      SELECT.from(VideosAve).where({ ave_ID: aveId })
+    ]);
+
+    const totalActual = (fotos?.length || 0) + (videos?.length || 0);
+    if (totalActual >= 3) {
+      return req.reject(400, "Solo se permiten 3 archivos como maximo por ave.");
+    }
+
+    const url = req.data.urlSharepoint || req.data.thumbnailUrl;
+    if (!url) {
+      return req.reject(400, "Debe indicar la referencia del archivo.");
+    }
+
+    const nombreArchivo = normalizarNombreArchivoAve(req.data.titulo || url);
+    const existeArchivo = [...(fotos || []), ...(videos || [])]
+      .some((archivo) => normalizarNombreArchivoAve(archivo.titulo || archivo.urlSharepoint) === nombreArchivo);
+
+    if (existeArchivo) {
+      return req.reject(400, "Este archivo ya fue registrado para el ave.");
+    }
+
+    if (tipoArchivo === "imagen") {
+      req.data.titulo = req.data.titulo || "Imagen del ave";
+      req.data.fechaFoto = req.data.fechaFoto || new Date().toISOString().slice(0, 10);
+    } else {
+      req.data.titulo = req.data.titulo || "Video del ave";
+      req.data.fechaVideo = req.data.fechaVideo || new Date().toISOString().slice(0, 10);
+    }
+  }
+
+  function normalizarNombreArchivoAve(nombre) {
+    return String(nombre || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^pending-upload:\/\/aves\/[^/]+\//, "")
+      .replace(/\?.*$/, "");
+  }
+
+  this.before("CREATE", FotosAve, async (req) => validarLimiteArchivosAve(req, "imagen"));
+  this.before("CREATE", VideosAve, async (req) => validarLimiteArchivosAve(req, "video"));
+
   this.before(['CREATE', 'UPDATE'], Incubaciones, async (req) => {
     const data = req.data;
 
@@ -1606,10 +1876,35 @@ module.exports = cds.service.impl(async function () {
 
   // Validar pelea
   this.before("CREATE", "Peleas", async (req) => {
-    const { fecha, ave } = req.data;
+    const aveId = req.data.ave_ID || req.data.ave?.ID;
+    const combatienteBId = req.data.combatienteB_ID || req.data.combatienteB?.ID;
+    const ambosPropios = req.data.ambosPropios !== false;
+
+    if (req.jwtUser?.id) {
+      req.data.usuario_ID = req.jwtUser.id;
+    }
+
+    if (!aveId) {
+      return req.error(400, "Debe seleccionar el Combatiente A.");
+    }
+
+    if (ambosPropios && !combatienteBId) {
+      return req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    if (!ambosPropios && !req.data.nombreOponente) {
+      return req.error(400, "Debe indicar el nombre del gallo rival.");
+    }
+
+    if (!ambosPropios && !req.data.propietarioOponente) {
+      return req.error(400, "Debe indicar el propietario del gallo rival.");
+    }
 
     // Verificar que el ave esté activa
-    const aveData = await SELECT.one.from(Aves).where({ ID: ave.ID });
+    const aveData = await SELECT.one.from(Aves).where({
+      ID: aveId,
+      usuario_ID: req.jwtUser?.id,
+    });
 
     if (!aveData) {
       req.error(404, "Ave no encontrada");
@@ -1620,16 +1915,261 @@ module.exports = cds.service.impl(async function () {
     }
 
     // Verificar que no haya peleas muy recientes (menos de 30 días)
+    if (ambosPropios) {
+      if (esMismoId(combatienteBId, aveId)) {
+        req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteBId,
+        usuario_ID: req.jwtUser?.id,
+      });
+
+      if (!combatienteB) {
+        req.error(404, "Combatiente B no encontrado para el usuario actual.");
+      }
+
+      if (combatienteB.estado !== "ACTIVO") {
+        req.error(400, "El Combatiente B no esta activo");
+      }
+
+      req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else {
+      req.data.combatienteB_ID = null;
+    }
+
     const hace30Dias = new Date();
     hace30Dias.setDate(hace30Dias.getDate() - 30);
 
     const peleasRecientes = await SELECT.from(Peleas)
-      .where({ ave_ID: ave.ID })
+      .where({ ave_ID: aveId })
       .and({ fecha: { ">": hace30Dias.toISOString() } });
 
     if (peleasRecientes.length > 0) {
       req.warn("El ave tuvo una pelea en los últimos 30 días");
     }
+  });
+
+  this.before(["UPDATE", "DELETE"], "Peleas", async (req) => {
+    const peleaId = req.params?.[0]?.ID || req.data?.ID;
+    const userId = req.jwtUser?.id;
+
+    if (!peleaId || !userId) return;
+
+    const pelea = await SELECT.one.from(Peleas).where({
+      ID: peleaId,
+      usuario_ID: userId,
+    });
+
+    if (!pelea) {
+      req.error(404, "Combate no encontrado para el usuario actual.");
+    }
+
+    if (req.event !== "UPDATE") return;
+
+    const data = { ...pelea, ...req.data };
+    const aveId = data.ave_ID || data.ave?.ID;
+    const combatienteBId = data.combatienteB_ID || data.combatienteB?.ID;
+    const ambosPropios = data.ambosPropios !== false;
+
+    if (!aveId) {
+      req.error(400, "Debe seleccionar el Combatiente A.");
+    }
+
+    if (ambosPropios && !combatienteBId) {
+      req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    if (!ambosPropios && !data.nombreOponente) {
+      req.error(400, "Debe indicar el nombre del gallo rival.");
+    }
+
+    if (!ambosPropios && !data.propietarioOponente) {
+      req.error(400, "Debe indicar el propietario del gallo rival.");
+    }
+
+    if (ambosPropios) {
+      if (esMismoId(combatienteBId, aveId)) {
+        req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteBId,
+        usuario_ID: userId,
+      });
+
+      if (!combatienteB || combatienteB.estado !== "ACTIVO") {
+        req.error(400, "Combatiente B no encontrado o inactivo.");
+      }
+
+      req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else {
+      req.data.combatienteB_ID = null;
+    }
+  });
+
+  this.on("prepararCargaVideoCombate", async (req) => {
+    const { peleaId, nombreArchivo, mimeType, tamanioBytes } = req.data;
+    const userId = req.jwtUser?.id;
+
+    await validarPlanPremiumMultimedia(req);
+
+    if (!peleaId) {
+      req.error(400, "Debe indicar el combate para asociar el video.");
+    }
+
+    if (!nombreArchivo || !mimeType) {
+      req.error(400, "Debe seleccionar un archivo de video valido.");
+    }
+
+    if (!String(mimeType).startsWith("video/")) {
+      req.error(400, "Solo se permiten archivos de video.");
+    }
+
+    if (Number(tamanioBytes || 0) <= 0) {
+      req.error(400, "El video seleccionado no tiene contenido.");
+    }
+
+    if (Number(tamanioBytes) > VIDEO_COMBATE_MAX_BYTES) {
+      req.error(400, "El video supera el tamano maximo permitido.");
+    }
+
+    const where = userId ? { ID: peleaId, usuario_ID: userId } : { ID: peleaId };
+    const pelea = await SELECT.one.from(Peleas).where(where);
+
+    if (!pelea) {
+      req.error(404, "Combate no encontrado para el usuario actual.");
+    }
+
+    const metadata = construirMetadataVideoCombate({
+      peleaId,
+      usuarioId: userId,
+      nombreArchivo,
+      mimeType,
+    });
+    metadata.uploadUrl = await crearUploadUrlS3({
+      bucket: AWS_S3_COMBATES_BUCKET,
+      storageKey: metadata.storageKey,
+      mimeType: metadata.mimeType,
+    });
+
+    await UPDATE(Peleas)
+      .set({
+        videoUrl: metadata.videoUrl,
+        videoStorageProvider: metadata.storageProvider,
+        videoStorageBucket: metadata.storageBucket,
+        videoStorageKey: metadata.storageKey,
+        videoNombreArchivo: metadata.nombreArchivo,
+        videoMimeType: metadata.mimeType,
+        videoSizeBytes: Number(tamanioBytes),
+        videoEstadoCarga: metadata.estadoCarga,
+      })
+      .where({ ID: peleaId });
+
+    return {
+      success: true,
+      message: AWS_S3_COMBATES_BUCKET
+        ? "Video preparado para carga en AWS S3."
+        : "Video registrado en modo preparacion. Configura AWS_S3_COMBATES_BUCKET para activar S3.",
+      uploadUrl: metadata.uploadUrl,
+      videoUrl: metadata.videoUrl,
+      storageProvider: metadata.storageProvider,
+      storageBucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      estadoCarga: metadata.estadoCarga,
+    };
+  });
+
+  this.on("prepararCargaArchivoAve", async (req) => {
+    const { aveId, nombreArchivo, mimeType, tamanioBytes, tipo } = req.data;
+    const userId = req.jwtUser?.id;
+    const tipoArchivo = String(tipo || "").toUpperCase();
+
+    await validarPlanPremiumMultimedia(req);
+
+    if (!aveId) {
+      req.error(400, "Debe indicar el ave para asociar el archivo.");
+    }
+
+    if (!nombreArchivo || !mimeType) {
+      req.error(400, "Debe seleccionar un archivo valido.");
+    }
+
+    if (!["IMAGEN", "VIDEO"].includes(tipoArchivo)) {
+      req.error(400, "El tipo debe ser IMAGEN o VIDEO.");
+    }
+
+    if (tipoArchivo === "IMAGEN" && !String(mimeType).startsWith("image/")) {
+      req.error(400, "El archivo seleccionado no es una imagen valida.");
+    }
+
+    if (tipoArchivo === "VIDEO" && !String(mimeType).startsWith("video/")) {
+      req.error(400, "El archivo seleccionado no es un video valido.");
+    }
+
+    if (Number(tamanioBytes || 0) <= 0) {
+      req.error(400, "El archivo seleccionado no tiene contenido.");
+    }
+
+    if (Number(tamanioBytes) > ARCHIVO_AVE_MAX_BYTES) {
+      req.error(400, "El archivo supera el tamano maximo permitido.");
+    }
+
+    const where = userId ? { ID: aveId, usuario_ID: userId } : { ID: aveId };
+    const ave = await SELECT.one.from(Aves).where(where);
+
+    if (!ave) {
+      req.error(404, "Ave no encontrada para el usuario actual.");
+    }
+
+    const metadata = construirMetadataArchivoAve({
+      aveId,
+      usuarioId: userId,
+      nombreArchivo,
+      mimeType,
+      tipo: tipoArchivo,
+    });
+    metadata.uploadUrl = await crearUploadUrlS3({
+      bucket: AWS_S3_AVES_BUCKET,
+      storageKey: metadata.storageKey,
+      mimeType: metadata.mimeType,
+    });
+
+    return {
+      success: true,
+      message: AWS_S3_AVES_BUCKET
+        ? "Archivo preparado para carga en AWS S3."
+        : "Archivo registrado en modo preparacion. Configura AWS_S3_AVES_BUCKET o AWS_S3_BUCKET para activar S3.",
+      uploadUrl: metadata.uploadUrl,
+      fileUrl: metadata.fileUrl,
+      storageProvider: metadata.storageProvider,
+      storageBucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      nombreArchivo: metadata.nombreArchivo,
+      mimeType: metadata.mimeType,
+      tipo: metadata.tipo,
+    };
+  });
+
+  this.on("obtenerUrlLecturaS3", async (req) => {
+    await validarPlanPremiumMultimedia(req);
+
+    const objeto = obtenerObjetoDesdeUrlS3(req.data.fileUrl);
+
+    if (!objeto) {
+      req.error(400, "La URL no pertenece a un bucket S3 configurado.");
+    }
+
+    const downloadUrl = await crearDownloadUrlS3(objeto);
+
+    return {
+      success: true,
+      downloadUrl,
+    };
   });
 
   //========================================
@@ -2342,7 +2882,7 @@ module.exports = cds.service.impl(async function () {
   }
 
   this.on("obtenerDashboard", async (req) => {
-    const { Ave, Incubacion, IncubacionDetalle, LineaAve } =
+    const { Ave, Incubacion, IncubacionDetalle, LineaAve, Pelea } =
       cds.entities("ave.combatiente");
 
     const usuarioId =
@@ -2410,6 +2950,12 @@ module.exports = cds.service.impl(async function () {
       })
       .columns("count(*) as total");
 
+    const totalCombates = await SELECT.from(Pelea)
+      .where({
+        usuario_ID: usuarioId
+      })
+      .columns("count(*) as total");
+
     const totalNacidosRes = await SELECT.from(IncubacionDetalle)
       .where({
         usuario_ID: usuarioId
@@ -2440,7 +2986,8 @@ module.exports = cds.service.impl(async function () {
       incubacionesRecientes: recientes || [],
       totalLineas: totalLineas?.[0]?.total || 0,
       totalPlanes: totalPlanes?.[0]?.total || 0,
-      totalPollitos: totalPollitos?.[0]?.total || 0
+      totalPollitos: totalPollitos?.[0]?.total || 0,
+      totalCombates: totalCombates?.[0]?.total || 0
     };
   });
 
@@ -2554,9 +3101,11 @@ module.exports = cds.service.impl(async function () {
   });
 
   this.before("READ", Incubaciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Peleas, (req) => agregarFiltroUsuario(req));
   this.before("READ", IncubacionDetalles, (req) => agregarFiltroUsuario(req));
   this.before("READ", PlanesCruces, (req) => agregarFiltroUsuario(req));
   this.before("READ", LineasAves, (req) => agregarFiltroUsuario(req));
   this.before("READ", EvaluacionesAves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", EvaluacionesPleito, (req) => agregarFiltroUsuario(req));
 
 });
