@@ -28,6 +28,9 @@ const AWS_S3_PRESIGN_EXPIRES_SECONDS = Number(
   process.env.AWS_S3_PRESIGN_EXPIRES_SECONDS || 900,
 );
 const ARCHIVO_AVE_MAX_BYTES = Number(process.env.ARCHIVO_AVE_MAX_BYTES || 104857600);
+const MAX_REGISTROS_COMBATES_POR_USUARIO = Number(
+  process.env.MAX_REGISTROS_COMBATES_POR_USUARIO || 10,
+);
 const s3Client = new S3Client({ region: AWS_S3_REGION });
 
 const nodemailer = require("nodemailer");
@@ -1882,6 +1885,21 @@ module.exports = cds.service.impl(async function () {
 
     if (req.jwtUser?.id) {
       req.data.usuario_ID = req.jwtUser.id;
+    }
+
+    if (req.jwtUser?.id && MAX_REGISTROS_COMBATES_POR_USUARIO > 0) {
+      const totalPeleas = await SELECT.one
+        .from(Peleas)
+        .where({ usuario_ID: req.jwtUser.id })
+        .columns("count(1) as total");
+      const totalActual = Number(totalPeleas?.total || 0);
+
+      if (totalActual >= MAX_REGISTROS_COMBATES_POR_USUARIO) {
+        return req.error(
+          403,
+          `Por ahora solo puedes registrar hasta ${MAX_REGISTROS_COMBATES_POR_USUARIO} combates. En produccion se habilitara sin limite.`,
+        );
+      }
     }
 
     if (!aveId) {
