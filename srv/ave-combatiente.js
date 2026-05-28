@@ -404,12 +404,13 @@ module.exports = cds.service.impl(async function () {
     const diasRestantes = suscripcion ? calcularDiasRestantes(suscripcion.fechaFin) : 0;
     const tienePremium =
       suscripcion &&
-      suscripcion.plan === "PREMIUM" &&
+      moduloPermitidoPorPlan(suscripcion.plan, "FotosAve") &&
+      moduloPermitidoPorPlan(suscripcion.plan, "VideosAve") &&
       ["ACTIVA", "CANCELADA"].includes(suscripcion.estado) &&
       diasRestantes >= 0;
 
     if (!tienePremium) {
-      return req.reject(403, "Las fotos y videos solo estan disponibles para el plan PREMIUM.");
+      return req.reject(403, "Las fotos y videos solo estan disponibles para el plan Premium o prueba vigente.");
     }
   }
 
@@ -753,7 +754,6 @@ module.exports = cds.service.impl(async function () {
     };
 
     await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
-
     // Enviar correo de activación
     await enviarCorreoActivacion(emailNormalizado, tokenActivacion);
 
@@ -1003,21 +1003,24 @@ module.exports = cds.service.impl(async function () {
     if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
 
     const plan = String(req.data.plan || "").trim().toUpperCase();
-    const meses = Math.max(Number(req.data.meses || 1), 1);
 
     if (!PLANES_SUSCRIPCION[plan]) {
       return req.reject(400, "Debe seleccionar un plan valido: PRUEBA, BASICO, PRO o PREMIUM.");
     }
 
     const actual = await obtenerSuscripcionUsuario(usuarioId);
+    if (plan === "PRUEBA" && actual) {
+      return req.reject(400, "El plan de prueba solo se activa automaticamente para usuarios nuevos.");
+    }
+
     const inicio = new Date();
     const config = PLANES_SUSCRIPCION[plan];
-    const fin = sumarDias(inicio, plan === "PRUEBA" ? config.dias : config.dias * meses);
+    const fin = sumarDias(inicio, plan === "PRUEBA" ? config.dias : 30);
     const datosSuscripcion = {
       ...construirDatosSuscripcion(plan, "ACTIVA", inicio),
       fechaFin: fechaISO(fin),
       proveedorPago: plan === "PRUEBA" ? null : "MANUAL",
-      observaciones: plan === "PRUEBA" ? "Plan de prueba activado" : `Plan ${plan} activado por ${meses} mes(es)`,
+      observaciones: plan === "PRUEBA" ? "Plan de prueba premium activado por 60 dias" : `Plan ${plan} activado por 30 dias`,
     };
 
     if (actual) {

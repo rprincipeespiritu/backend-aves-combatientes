@@ -1,9 +1,9 @@
 const PLANES_SUSCRIPCION = {
   PRUEBA: {
-    dias: 30,
-    maxAves: 100,
-    maxPollitos: 200,
-    maxIncubaciones: 50,
+    dias: 60,
+    maxAves: 999999,
+    maxPollitos: 999999,
+    maxIncubaciones: 999999,
     precioMensual: 0,
   },
   BASICO: {
@@ -31,11 +31,7 @@ const PLANES_SUSCRIPCION = {
 
 const MODULOS_POR_PLAN = {
   PRUEBA: [
-    "Aves",
-    "Crias",
-    "Incubaciones",
-    "IncubacionDetalles",
-    "Suscripciones",
+    "*",
   ],
   BASICO: [
     "Aves",
