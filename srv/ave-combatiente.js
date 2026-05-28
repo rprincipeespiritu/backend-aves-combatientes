@@ -31,6 +31,9 @@ const ARCHIVO_AVE_MAX_BYTES = Number(process.env.ARCHIVO_AVE_MAX_BYTES || 104857
 const MAX_REGISTROS_COMBATES_POR_USUARIO = Number(
   process.env.MAX_REGISTROS_COMBATES_POR_USUARIO || 10,
 );
+const AWS_S3_ENV_PREFIX = String(process.env.AWS_S3_ENV_PREFIX || "dev")
+  .trim()
+  .replace(/^\/+|\/+$/g, "");
 const s3Client = new S3Client({ region: AWS_S3_REGION });
 
 const nodemailer = require("nodemailer");
@@ -172,6 +175,13 @@ function construirUrlS3(bucket, storageKey) {
   return `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/${storageKey}`;
 }
 
+function construirStorageKeyS3(...parts) {
+  return [AWS_S3_ENV_PREFIX, ...parts]
+    .filter((part) => part !== undefined && part !== null && String(part).trim() !== "")
+    .map((part) => String(part).replace(/^\/+|\/+$/g, ""))
+    .join("/");
+}
+
 async function crearUploadUrlS3({ bucket, storageKey, mimeType }) {
   if (!bucket) return null;
 
@@ -220,12 +230,12 @@ function obtenerObjetoDesdeUrlS3(fileUrl) {
 
 function construirMetadataVideoCombate({ peleaId, usuarioId, nombreArchivo, mimeType }) {
   const safeName = normalizarNombreArchivo(nombreArchivo);
-  const storageKey = [
+  const storageKey = construirStorageKeyS3(
     "combates",
     usuarioId || "sin-usuario",
     peleaId,
     `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
-  ].join("/");
+  );
   const bucket = AWS_S3_COMBATES_BUCKET || "pendiente-configurar-bucket-s3";
   const videoUrl = AWS_S3_COMBATES_BUCKET
     ? construirUrlS3(bucket, storageKey)
@@ -246,13 +256,13 @@ function construirMetadataVideoCombate({ peleaId, usuarioId, nombreArchivo, mime
 function construirMetadataArchivoAve({ aveId, usuarioId, nombreArchivo, mimeType, tipo }) {
   const safeName = normalizarNombreArchivo(nombreArchivo || "archivo");
   const tipoCarpeta = tipo === "VIDEO" ? "videos" : "fotos";
-  const storageKey = [
+  const storageKey = construirStorageKeyS3(
     "aves",
     usuarioId || "sin-usuario",
     aveId,
     tipoCarpeta,
     `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
-  ].join("/");
+  );
   const bucket = AWS_S3_AVES_BUCKET || "pendiente-configurar-bucket-s3";
   const fileUrl = AWS_S3_AVES_BUCKET
     ? construirUrlS3(bucket, storageKey)
