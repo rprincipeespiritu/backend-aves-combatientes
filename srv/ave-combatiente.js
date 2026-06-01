@@ -34,6 +34,7 @@ const MAX_REGISTROS_COMBATES_POR_USUARIO = Number(
 const AWS_S3_ENV_PREFIX = String(process.env.AWS_S3_ENV_PREFIX || "dev")
   .trim()
   .replace(/^\/+|\/+$/g, "");
+const LINEA_CRUCE_ABIERTO_NOMBRE = "Cruce abierto";
 const s3Client = new S3Client({ region: AWS_S3_REGION });
 
 //============================================
@@ -41,7 +42,7 @@ const s3Client = new S3Client({ region: AWS_S3_REGION });
 //============================================
 const PERMISOS_ROL = {
   ADMIN: {
-    Aves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Aves: ["READ", "CREATE", "UPDATE", "DELETE", "recalcularComposicionLineas"],
     Crias: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -49,6 +50,7 @@ const PERMISOS_ROL = {
     EvaluacionesAves: ["READ", "CREATE", "UPDATE", "DELETE"],
     EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    ComposicionesLineaAve: ["READ", "CREATE", "UPDATE", "DELETE"],
     PlanesCruces: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Tratamientos: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -67,7 +69,7 @@ const PERMISOS_ROL = {
     Historial: ["READ"],
   },
   CRIADOR: {
-    Aves: ["READ", "CREATE", "UPDATE"],
+    Aves: ["READ", "CREATE", "UPDATE", "recalcularComposicionLineas"],
     Crias: ["READ", "CREATE", "UPDATE"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -75,6 +77,7 @@ const PERMISOS_ROL = {
     EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
     EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE"],
+    ComposicionesLineaAve: ["READ", "CREATE", "UPDATE"],
     PlanesCruces: ["READ", "CREATE", "UPDATE"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ", "CREATE", "UPDATE"],
@@ -100,6 +103,7 @@ const PERMISOS_ROL = {
     EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
     EvaluacionesPleito: ["READ", "CREATE", "UPDATE"],
     LineasAves: ["READ"],
+    ComposicionesLineaAve: ["READ"],
     PlanesCruces: ["READ"],
     Tratamientos: ["READ", "CREATE", "UPDATE"],
     Alimentaciones: ["READ", "CREATE"],
@@ -125,6 +129,7 @@ const PERMISOS_ROL = {
     EvaluacionesAves: ["READ"],
     EvaluacionesPleito: ["READ"],
     LineasAves: ["READ"],
+    ComposicionesLineaAve: ["READ"],
     PlanesCruces: ["READ"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ"],
@@ -357,6 +362,7 @@ module.exports = cds.service.impl(async function () {
     Rol,
     Suscripciones,
     LineasAves,
+    ComposicionesLineaAve,
     PlanesCruces,
     EvaluacionesAves,
     EvaluacionesPleito,
@@ -376,6 +382,18 @@ module.exports = cds.service.impl(async function () {
     }
 
     req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
+  }
+
+  function agregarFiltroEstadoNoEliminado(req, campoEstado = "estado") {
+    if (!req.query?.SELECT) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: [campoEstado] }, "!=", { val: "ELIMINADO" });
   }
 
   function calcularDiasRestantes(fechaFin) {
@@ -550,6 +568,8 @@ module.exports = cds.service.impl(async function () {
       return req.reject(403, msg);
     }
 
+    if (req.event === "recalcularComposicionLineas") return;
+
     // Verificar permisos por rol
     const rol = req.jwtUser.rol;
     const operacion = req.event; // READ, CREATE, UPDATE, DELETE
@@ -600,9 +620,12 @@ module.exports = cds.service.impl(async function () {
       Historial: "Historial",
       LineaAve: "LineasAves",
       LineasAves: "LineasAves",
-      PlanCruce: "PlanesCruces",
-      PlanesCruces: "PlanesCruces",
-      EvaluacionAve: "EvaluacionesAves",
+      LineasAvesActivas: "LineasAves",
+    PlanCruce: "PlanesCruces",
+    PlanesCruces: "PlanesCruces",
+    ComposicionLineaAve: "ComposicionesLineaAve",
+    ComposicionesLineaAve: "ComposicionesLineaAve",
+    EvaluacionAve: "EvaluacionesAves",
       EvaluacionesAves: "EvaluacionesAves",
       EvaluacionPleito: "EvaluacionesPleito",
       EvaluacionesPleito: "EvaluacionesPleito",
@@ -1186,6 +1209,7 @@ module.exports = cds.service.impl(async function () {
   this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
   this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
   this.before("READ", Suscripciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", ComposicionesLineaAve, (req) => agregarFiltroUsuario(req));
   this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
   this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
   this.before("READ", LineasAvesActivas, (req) => agregarFiltroUsuario(req));
@@ -1224,6 +1248,306 @@ module.exports = cds.service.impl(async function () {
     if (duplicado) {
       return req.reject(409, `Ya existe una cria con cintillo ${data.cintillo}, color ${data.colorCintillo} y temporada ${data.temporada}`);
     }
+  }
+
+  async function obtenerComposicionBaseAve(aveId) {
+    if (!aveId) return [];
+
+    const composicion = await SELECT
+      .from(ComposicionesLineaAve)
+      .columns("linea_ID", "porcentaje")
+      .where({ ave_ID: aveId });
+
+    if (composicion.length) {
+      return composicion
+        .filter((item) => item.linea_ID && Number(item.porcentaje) > 0)
+        .map((item) => ({
+          linea_ID: item.linea_ID,
+          porcentaje: Number(item.porcentaje),
+        }));
+    }
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("ID", "linea_ID")
+      .where({ ID: aveId });
+
+    return ave?.linea_ID
+      ? [{ linea_ID: ave.linea_ID, porcentaje: 100 }]
+      : [];
+  }
+
+  function acumularComposicionLinea(mapa, composicion, factor) {
+    for (const item of composicion) {
+      const lineaId = item.linea_ID;
+      const porcentaje = Number(item.porcentaje || 0) * factor;
+      if (!lineaId || porcentaje <= 0) continue;
+
+      mapa.set(lineaId, Number((Number(mapa.get(lineaId) || 0) + porcentaje).toFixed(6)));
+    }
+  }
+
+  function normalizarComposicionLinea(mapa) {
+    const items = Array.from(mapa.entries())
+      .map(([linea_ID, porcentaje]) => ({
+        linea_ID,
+        porcentaje: Number(porcentaje),
+      }))
+      .filter((item) => item.linea_ID && item.porcentaje > 0);
+
+    const total = items.reduce((sum, item) => sum + item.porcentaje, 0);
+    if (total <= 0) return [];
+
+    const normalizados = items.map((item) => ({
+      linea_ID: item.linea_ID,
+      porcentaje: Number(item.porcentaje.toFixed(2)),
+    }));
+
+    const suma = normalizados.reduce((sum, item) => sum + item.porcentaje, 0);
+    const diferencia = Number((100 - suma).toFixed(2));
+    if (normalizados.length && suma > 99.9 && suma < 100.1 && diferencia !== 0) {
+      normalizados.sort((a, b) => b.porcentaje - a.porcentaje);
+      normalizados[0].porcentaje = Number((normalizados[0].porcentaje + diferencia).toFixed(2));
+    }
+
+    return normalizados.sort((a, b) => b.porcentaje - a.porcentaje);
+  }
+
+  async function recalcularComposicionLineaAve(aveId) {
+    if (!aveId) return;
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("ID", "linea_ID", "padre_ID", "madre_ID", "usuario_ID")
+      .where({ ID: aveId });
+
+    if (!ave) return;
+
+    const mapa = new Map();
+    const composicionPadre = await obtenerComposicionBaseAve(ave.padre_ID);
+    const composicionMadre = await obtenerComposicionBaseAve(ave.madre_ID);
+
+    if (composicionPadre.length || composicionMadre.length) {
+      if (composicionPadre.length) acumularComposicionLinea(mapa, composicionPadre, 0.5);
+      if (composicionMadre.length) acumularComposicionLinea(mapa, composicionMadre, 0.5);
+    } else if (ave.linea_ID) {
+      mapa.set(ave.linea_ID, 100);
+    }
+
+    const composicion = normalizarComposicionLinea(mapa);
+
+    await DELETE.from(ComposicionesLineaAve).where({ ave_ID: aveId });
+
+    if (!composicion.length) return;
+
+    await INSERT.into(ComposicionesLineaAve).entries(
+      composicion.map((item) => ({
+        ID: crypto.randomUUID(),
+        ave_ID: aveId,
+        linea_ID: item.linea_ID,
+        porcentaje: item.porcentaje,
+        usuario_ID: ave.usuario_ID,
+      })),
+    );
+  }
+
+  async function obtenerPorcentajeAveEnLinea(aveId, lineaId) {
+    if (!aveId || !lineaId) return 0;
+
+    await recalcularComposicionLineaAve(aveId);
+
+    const composicion = await SELECT.one
+      .from(ComposicionesLineaAve)
+      .columns("porcentaje")
+      .where({ ave_ID: aveId, linea_ID: lineaId });
+
+    if (composicion) {
+      return Number(composicion.porcentaje || 0);
+    }
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("linea_ID")
+      .where({ ID: aveId });
+
+    return ave?.linea_ID === lineaId ? 100 : 0;
+  }
+
+  async function obtenerLineaCruceAbierto(usuarioId) {
+    if (!usuarioId) return null;
+
+    const existente = await SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        usuario_ID: usuarioId,
+        nombre: LINEA_CRUCE_ABIERTO_NOMBRE,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    if (existente) return existente;
+
+    const lineaId = crypto.randomUUID();
+    await INSERT.into(LineasAves).entries({
+      ID: lineaId,
+      nombre: LINEA_CRUCE_ABIERTO_NOMBRE,
+      descripcion: "Linea tecnica para registrar cruces sin linaje asociado.",
+      objetivo: "Registrar cruces abiertos.",
+      generacionActual: 0,
+      estadoMejora: "OBSERVACION",
+      estado: "ACTIVA",
+      usuario_ID: usuarioId,
+    });
+
+    return { ID: lineaId, nombre: LINEA_CRUCE_ABIERTO_NOMBRE };
+  }
+
+  async function esLineaCruceAbierto(lineaId, usuarioId) {
+    if (!lineaId) return false;
+
+    const linea = await SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        ID: lineaId,
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    return linea?.nombre === LINEA_CRUCE_ABIERTO_NOMBRE;
+  }
+
+  async function obtenerLineaPorId(lineaId, usuarioId) {
+    if (!lineaId) return null;
+
+    return SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        ID: lineaId,
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      });
+  }
+
+  async function obtenerCandidatasLineaPorPadres(machoId, hembraId, usuarioId) {
+    await Promise.all([
+      recalcularComposicionLineaAve(machoId),
+      recalcularComposicionLineaAve(hembraId),
+    ]);
+
+    const [composicionMacho, composicionHembra] = await Promise.all([
+      SELECT.from(ComposicionesLineaAve)
+        .columns("linea_ID", "porcentaje")
+        .where({ ave_ID: machoId }),
+      SELECT.from(ComposicionesLineaAve)
+        .columns("linea_ID", "porcentaje")
+        .where({ ave_ID: hembraId }),
+    ]);
+
+    const lineas = new Map();
+    const acumular = (items) => {
+      for (const item of items || []) {
+        const lineaId = item.linea_ID;
+        const porcentaje = Number(item.porcentaje || 0);
+        if (!lineaId || porcentaje <= 0) continue;
+
+        lineas.set(lineaId, Number((Number(lineas.get(lineaId) || 0) + porcentaje).toFixed(2)));
+      }
+    };
+
+    acumular(composicionMacho);
+    acumular(composicionHembra);
+
+    const candidatas = [];
+    for (const [lineaId, porcentajeTotal] of lineas.entries()) {
+      const linea = await obtenerLineaPorId(lineaId, usuarioId);
+      if (!linea || linea.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) continue;
+      candidatas.push({ ...linea, porcentajeTotal });
+    }
+
+    return candidatas.sort((a, b) => {
+      if (b.porcentajeTotal !== a.porcentajeTotal) {
+        return b.porcentajeTotal - a.porcentajeTotal;
+      }
+
+      return String(a.nombre || "").localeCompare(String(b.nombre || ""));
+    });
+  }
+
+  async function determinarLineaPlanCruce(req, data, usuarioId) {
+    const lineaSolicitada = await obtenerLineaPorId(data.linea_ID, usuarioId);
+    if (!lineaSolicitada) {
+      return req.reject(400, "La linea seleccionada no existe o no pertenece al usuario.");
+    }
+
+    const candidatas = await obtenerCandidatasLineaPorPadres(data.macho_ID, data.hembra_ID, usuarioId);
+    const candidataSolicitada = candidatas.find((linea) => linea.ID === lineaSolicitada.ID);
+
+    if (candidataSolicitada) {
+      return { linea: candidataSolicitada, cruceAbierto: false };
+    }
+
+    if (candidatas.length) {
+      return { linea: candidatas[0], cruceAbierto: false };
+    }
+
+    const lineaAbierta = lineaSolicitada.nombre === LINEA_CRUCE_ABIERTO_NOMBRE
+      ? lineaSolicitada
+      : await obtenerLineaCruceAbierto(usuarioId);
+
+    if (!lineaAbierta) {
+      return req.reject(400, "No se pudo preparar la linea de cruce abierto.");
+    }
+
+    return { linea: lineaAbierta, cruceAbierto: true };
+  }
+
+  function asegurarPrefijoCodigoPlan(codigo, cruceAbierto) {
+    const prefijo = cruceAbierto ? "PCA" : "PC";
+    if (!codigo) {
+      const fecha = new Date();
+      const yyyyMMdd = fecha.toISOString().slice(0, 10).replace(/-/g, "");
+      const hhmmss = fecha.toTimeString().slice(0, 8).replace(/:/g, "");
+      return `${prefijo}-${yyyyMMdd}-${hhmmss}`;
+    }
+
+    return String(codigo).replace(/^(PCA|PC)([_-])/, `${prefijo}$2`);
+  }
+
+  async function validarPlanCruce(req, data, planIdExcluir = null) {
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+
+    if (!data.linea_ID || !data.macho_ID || !data.hembra_ID) {
+      return req.reject(400, "Debe seleccionar linea, macho y hembra para crear el plan de cruce.");
+    }
+
+    if (data.macho_ID === data.hembra_ID) {
+      return req.reject(400, "El macho y la hembra no pueden ser el mismo ejemplar.");
+    }
+
+    const { linea, cruceAbierto } = await determinarLineaPlanCruce(req, data, usuarioId);
+    data.linea_ID = linea.ID;
+
+    const duplicados = await SELECT
+      .from(PlanesCruces)
+      .columns("ID", "codigo")
+      .where({
+        usuario_ID: usuarioId,
+        macho_ID: data.macho_ID,
+        hembra_ID: data.hembra_ID,
+        estado: { "!=": "ELIMINADO" },
+      });
+    const planDuplicado = duplicados.find((plan) => !planIdExcluir || plan.ID !== planIdExcluir);
+
+    if (planDuplicado) {
+      return req.reject(
+        409,
+        `Ya existe un plan de cruce activo con los mismos padres: ${planDuplicado.codigo || planDuplicado.ID}.`,
+      );
+    }
+
+    return { cruceAbierto, usuarioId, linea };
   }
 
   this.before("CREATE", Crias, async (req) => {
@@ -1294,6 +1618,7 @@ module.exports = cds.service.impl(async function () {
     };
 
     await INSERT.into(Aves).entries(ave);
+    await recalcularComposicionLineaAve(aveId);
     const aveCreada = await SELECT.one.from(Aves).where({ ID: aveId });
 
     await UPDATE(Crias)
@@ -1410,6 +1735,11 @@ module.exports = cds.service.impl(async function () {
       req.data.aptoReproduccion = false;
       req.data.placa = dataCompleta.placa || generarPlacaPollito(dataCompleta);
     }
+  });
+
+  this.after("UPDATE", "Aves", async (data, req) => {
+    const aveId = req.params?.[0]?.ID || data?.ID;
+    await recalcularComposicionLineaAve(aveId);
   });
 
   function validarNumeros(data) {
@@ -1551,40 +1881,30 @@ module.exports = cds.service.impl(async function () {
 
   this.before("CREATE", PlanesCruces, async (req) => {
     const data = req.data;
-    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const { cruceAbierto, linea } = await validarPlanCruce(req, data);
 
-    if (!data.linea_ID || !data.macho_ID || !data.hembra_ID) {
-      return req.reject(400, "Debe seleccionar linea, macho y hembra para crear el plan de cruce.");
+    req.data.linea_ID = linea.ID;
+    req.data.codigo = asegurarPrefijoCodigoPlan(req.data.codigo, cruceAbierto);
+  });
+
+  this.before("UPDATE", PlanesCruces, async (req) => {
+    const planId = req.params?.[0]?.ID || req.data?.ID;
+    if (!planId) return req.reject(400, "No se pudo identificar el plan de cruce.");
+
+    const actual = await SELECT.one.from(PlanesCruces).where({ ID: planId, usuario_ID: req.jwtUser?.id });
+    if (!actual || actual.estado === "ELIMINADO") {
+      return req.reject(404, "Plan de cruce no encontrado.");
     }
 
-    if (data.macho_ID === data.hembra_ID) {
-      return req.reject(400, "El macho y la hembra no pueden ser el mismo ejemplar.");
-    }
+    const dataCompleta = { ...actual, ...req.data };
+    if (dataCompleta.estado === "ELIMINADO") return;
 
-    const planDuplicado = await SELECT.one
-      .from(PlanesCruces)
-      .columns("ID", "codigo")
-      .where({
-        usuario_ID: usuarioId,
-        linea_ID: data.linea_ID,
-        macho_ID: data.macho_ID,
-        hembra_ID: data.hembra_ID,
-        estado: { "!=": "ELIMINADO" },
-      });
+    const { cruceAbierto, linea } = await validarPlanCruce(req, dataCompleta, planId);
 
-    if (planDuplicado) {
-      return req.reject(
-        409,
-        `Ya existe un plan de cruce con los mismos padres para esta linea: ${planDuplicado.codigo || planDuplicado.ID}.`,
-      );
-    }
-
-    if (!req.data.codigo) {
-      const fecha = new Date();
-      const yyyyMMdd = fecha.toISOString().slice(0, 10).replace(/-/g, "");
-      const hhmmss = fecha.toTimeString().slice(0, 8).replace(/:/g, "");
-      req.data.codigo = `PC-${yyyyMMdd}-${hhmmss}`;
-    }
+    req.data.linea_ID = linea.ID;
+    req.data.macho_ID = dataCompleta.macho_ID;
+    req.data.hembra_ID = dataCompleta.hembra_ID;
+    req.data.codigo = asegurarPrefijoCodigoPlan(dataCompleta.codigo, cruceAbierto);
   });
 
   this.before(["CREATE", "UPDATE"], EvaluacionesAves, async (req) => {
@@ -2210,6 +2530,7 @@ module.exports = cds.service.impl(async function () {
     try {
       // Aquí iría la lógica de SharePoint
       // await crearCarpetaSharePoint(data.ID, data.placa);
+      await recalcularComposicionLineaAve(data.ID);
       console.log(`Ave creada: ${data.placa}`);
     } catch (error) {
       console.error("Error creando carpeta SharePoint:", error);
@@ -2312,6 +2633,23 @@ module.exports = cds.service.impl(async function () {
     const arbol = await construirArbolGenealogico(ID, 3); // 3 generaciones
 
     return JSON.stringify(arbol);
+  });
+
+  this.on("recalcularComposicionLineas", "Aves", async (req) => {
+    const { ID } = req.params[0];
+    const usuarioId = req.jwtUser?.id;
+
+    const ave = await SELECT.one.from(Aves).where({ ID, usuario_ID: usuarioId });
+    if (!ave) {
+      return req.reject(404, "Ave no encontrada");
+    }
+
+    await recalcularComposicionLineaAve(ID);
+
+    return {
+      success: true,
+      message: "Composicion de lineas recalculada",
+    };
   });
 
   //========================================
@@ -2961,16 +3299,22 @@ module.exports = cds.service.impl(async function () {
     const totalLineas = await SELECT.from(LineaAve)
       .where({
         usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
+        estado: { "!=": "ELIMINADO" },
+        nombre: { "!=": "Cruce abierto" }
       })
       .columns("count(*) as total");
 
-    const totalPlanes = await SELECT.from(PlanesCruces)
+    const planesActivos = await SELECT.from(PlanesCruces)
       .where({
         usuario_ID: usuarioId,
         estado: { "!=": "ELIMINADO" }
       })
-      .columns("count(*) as total");
+      .columns("macho_ID", "hembra_ID");
+    const totalPlanes = new Set(
+      (planesActivos || [])
+        .filter((plan) => plan.macho_ID && plan.hembra_ID)
+        .map((plan) => `${plan.macho_ID}|${plan.hembra_ID}`),
+    ).size;
 
     const totalPollitos = await SELECT.from(Crias)
       .where({
@@ -3014,7 +3358,7 @@ module.exports = cds.service.impl(async function () {
       alertaEclosion: iActivas > 0 ? `Tienes ${iActivas} incubaciones en proceso.` : "",
       incubacionesRecientes: recientes || [],
       totalLineas: totalLineas?.[0]?.total || 0,
-      totalPlanes: totalPlanes?.[0]?.total || 0,
+      totalPlanes,
       totalPollitos: totalPollitos?.[0]?.total || 0,
       totalCombates: totalCombates?.[0]?.total || 0
     };
@@ -3129,10 +3473,22 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
+  this.on("obtenerLineaCruceAbierto", async (req) => {
+    const linea = await obtenerLineaCruceAbierto(req.jwtUser?.id);
+    if (!linea) {
+      return req.reject(400, "No se pudo preparar la linea de cruce abierto.");
+    }
+
+    return { lineaId: linea.ID };
+  });
+
   this.before("READ", Incubaciones, (req) => agregarFiltroUsuario(req));
   this.before("READ", Peleas, (req) => agregarFiltroUsuario(req));
   this.before("READ", IncubacionDetalles, (req) => agregarFiltroUsuario(req));
-  this.before("READ", PlanesCruces, (req) => agregarFiltroUsuario(req));
+  this.before("READ", PlanesCruces, (req) => {
+    agregarFiltroUsuario(req);
+    agregarFiltroEstadoNoEliminado(req);
+  });
   this.before("READ", LineasAves, (req) => agregarFiltroUsuario(req));
   this.before("READ", EvaluacionesAves, (req) => agregarFiltroUsuario(req));
   this.before("READ", EvaluacionesPleito, (req) => agregarFiltroUsuario(req));

@@ -120,6 +120,8 @@ entity Ave : cuid, managed {
                                     on videos.ave = $self;
     documentos                : Composition of many DocumentoAve
                                     on documentos.ave = $self;
+    composicionLineas         : Composition of many ComposicionLineaAve
+                                    on composicionLineas.ave = $self;
     usuario                   : Association to Usuario  @mandatory;
     linea                     : Association to LineaAve;
 
@@ -571,6 +573,13 @@ entity LineaAve : cuid, managed {
                            on aves.linea = $self;
 
     usuario          : Association to Usuario      @mandatory;
+}
+
+entity ComposicionLineaAve : cuid, managed {
+    ave        : Association to Ave      @mandatory;
+    linea      : Association to LineaAve @mandatory;
+    porcentaje : Decimal(5, 2)           @mandatory;
+    usuario    : Association to Usuario  @mandatory;
 }
 
 entity PlanCruce : cuid, managed {
