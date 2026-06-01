@@ -35,6 +35,7 @@ const MODULOS_POR_PLAN = {
   ],
   BASICO: [
     "Aves",
+    "ComposicionesLineaAve",
     "Crias",
     "Incubaciones",
     "IncubacionDetalles",
@@ -42,6 +43,7 @@ const MODULOS_POR_PLAN = {
   ],
   PRO: [
     "Aves",
+    "ComposicionesLineaAve",
     "Crias",
     "Incubaciones",
     "IncubacionDetalles",

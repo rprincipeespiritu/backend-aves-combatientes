@@ -18,6 +18,10 @@ service AveCombatienteService {
             action marcarComoVendido(precio: Decimal, comprador: String) returns Aves;
             action marcarComoFallecido(fecha: Date, causa: String)       returns Aves;
             action generarArbolGenealogico()                             returns LargeString; // JSON del árbol
+            action recalcularComposicionLineas()                          returns {
+                success : Boolean;
+                message : String;
+            };
         };
 
     action   eliminarAve(aveId: String)                                                                                                                 returns {
@@ -36,6 +40,7 @@ service AveCombatienteService {
 
     entity Crias               as projection on combatiente.Cria;
     entity LineasAves          as projection on combatiente.LineaAve;
+    entity ComposicionesLineaAve as projection on combatiente.ComposicionLineaAve;
     entity PlanesCruces        as projection on combatiente.PlanCruce;
     entity EvaluacionesAves    as projection on combatiente.EvaluacionAve;
     entity EvaluacionesPleito  as projection on combatiente.EvaluacionPleito;
@@ -124,7 +129,8 @@ service AveCombatienteService {
     entity LineasAvesActivas   as
         select from combatiente.LineaAve
         where
-            estado <> 'ELIMINADO';
+                estado <> 'ELIMINADO'
+            and nombre <> 'Cruce abierto';
 
     // Vista: Top gallos por peleas ganadas
     @readonly
@@ -413,6 +419,10 @@ service AveCombatienteService {
         state            : String;
         messageType      : String;
         ancestrosComunes : LargeString;
+    };
+
+    action   obtenerLineaCruceAbierto()                                                                                                                 returns {
+        lineaId : String;
     };
 
     action   eliminarLineaAve(lineaAveId: String)                                                                                                                 returns {
