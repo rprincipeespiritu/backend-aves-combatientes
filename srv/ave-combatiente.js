@@ -938,6 +938,124 @@ module.exports = cds.service.impl(async function () {
       message: "Sesión cerrada exitosamente",
     };
   });
+  async function obtenerUsuarioPerfil(usuarioId) {
+    const user = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "nombre",
+        "apellido",
+        "telefono",
+        "direccion",
+        "estado",
+        "rol_ID",
+      )
+      .where({ ID: usuarioId });
+
+    if (!user) return null;
+
+    let rolNombre = "";
+    if (user.rol_ID) {
+      const rol = await SELECT.one
+        .from("ave.combatiente.Rol")
+        .columns("nombre")
+        .where({ ID: user.rol_ID });
+      rolNombre = rol?.nombre || "";
+    }
+
+    return {
+      success: true,
+      userId: user.ID,
+      username: user.username,
+      nombre: user.nombre,
+      apellido: user.apellido,
+      email: user.email,
+      telefono: user.telefono,
+      direccion: user.direccion,
+      rol: rolNombre,
+      estado: user.estado,
+    };
+  }
+
+  this.on("obtenerPerfil", async (req) => {
+    const perfil = await obtenerUsuarioPerfil(req.jwtUser?.id);
+    if (!perfil) return req.reject(404, "Usuario no encontrado");
+    return perfil;
+  });
+
+  this.on("actualizarPerfil", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    const { username, email, nombre, apellido, telefono, direccion } = req.data;
+
+    if (!email || !nombre || !apellido) {
+      return req.reject(400, "Email, nombre y apellido son requeridos");
+    }
+
+    const emailNormalizado = String(email).trim().toLowerCase();
+    const usuarioDuplicado = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns("ID")
+      .where({ email: emailNormalizado, ID: { "!=": usuarioId } });
+
+    if (usuarioDuplicado) {
+      return req.reject(409, "El email ya esta registrado por otro usuario");
+    }
+
+    await UPDATE("ave.combatiente.Usuario")
+      .set({
+        username: String(username || "").trim() || emailNormalizado,
+        email: emailNormalizado,
+        nombre: String(nombre || "").trim(),
+        apellido: String(apellido || "").trim(),
+        telefono: telefono ? String(telefono).trim() : null,
+        direccion: direccion ? String(direccion).trim() : null,
+      })
+      .where({ ID: usuarioId });
+
+    const perfil = await obtenerUsuarioPerfil(usuarioId);
+    return {
+      ...perfil,
+      message: "Perfil actualizado correctamente",
+    };
+  });
+
+  this.on("cambiarPassword", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    const { passwordActual, passwordNuevo } = req.data;
+
+    if (!passwordActual || !passwordNuevo) {
+      return req.reject(400, "La contrasena actual y nueva son requeridas");
+    }
+
+    if (String(passwordNuevo).length < 6) {
+      return req.reject(400, "La nueva contrasena debe tener al menos 6 caracteres");
+    }
+
+    const user = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns("ID", "password")
+      .where({ ID: usuarioId });
+
+    if (!user) return req.reject(404, "Usuario no encontrado");
+
+    const passwordValido = await bcrypt.compare(passwordActual, user.password);
+    if (!passwordValido) {
+      return req.reject(400, "La contrasena actual no es correcta");
+    }
+
+    const passwordHash = await bcrypt.hash(passwordNuevo, 10);
+    await UPDATE("ave.combatiente.Usuario")
+      .set({ password: passwordHash })
+      .where({ ID: usuarioId });
+
+    return {
+      success: true,
+      message: "Contrasena actualizada correctamente",
+    };
+  });
+
   async function construirResumenSuscripcion(usuarioId) {
     const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
 

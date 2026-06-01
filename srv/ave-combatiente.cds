@@ -319,6 +319,45 @@ service AveCombatienteService {
         message : String;
     };
 
+    action   obtenerPerfil()                                                                                                                            returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+    };
+
+    action   actualizarPerfil(username: String,
+                              email: String,
+                              nombre: String,
+                              apellido: String,
+                              telefono: String,
+                              direccion: String)                                                                                                        returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+    };
+
+    action   cambiarPassword(passwordActual: String,
+                             passwordNuevo: String)                                                                                                     returns {
+        success : Boolean;
+        message : String;
+    };
+
     action   registrarRoles(codigo: String, nombre: String, descripcion: String, permisos: String, activo: Boolean)                                     returns {
         success     : Boolean;
         codigo      : String;
