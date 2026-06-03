@@ -185,6 +185,27 @@ function construirStorageKeyS3(...parts) {
     .join("/");
 }
 
+function normalizarUrlBase(rawUrl, fallback = "http://localhost:4004") {
+  let value = String(rawUrl || fallback).trim();
+
+  // Railway/env values sometimes arrive without protocol or copied with brackets.
+  value = value.replace(/^\[+|\]+$/g, "").trim();
+
+  if (!/^https?:\/\//i.test(value)) {
+    const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(value);
+    value = `${isLocal ? "http" : "https"}://${value}`;
+  }
+
+  return value.replace(/\/+$/g, "");
+}
+
+function construirLinkActivacion(tokenActivacion) {
+  const appUrl = normalizarUrlBase(process.env.APP_URL);
+  const url = new URL("/activar-cuenta", appUrl);
+  url.searchParams.set("token", tokenActivacion);
+  return url.toString();
+}
+
 async function crearUploadUrlS3({ bucket, storageKey, mimeType }) {
   if (!bucket) return null;
 
@@ -2895,8 +2916,6 @@ module.exports = cds.service.impl(async function () {
     const apiKey = process.env.SENDGRID_API_KEY;
 
     const fromEmail = process.env.SENDGRID_FROM_EMAIL;
-    const appUrl = process.env.APP_URL || "http://localhost:4004";
-
     if (!apiKey) {
       throw new Error("Falta SENDGRID_API_KEY");
     }
@@ -2907,7 +2926,7 @@ module.exports = cds.service.impl(async function () {
 
     sgMail.setApiKey(apiKey);
 
-    const linkActivacion = `${appUrl}/activar-cuenta?token=${tokenActivacion}`;
+    const linkActivacion = construirLinkActivacion(tokenActivacion);
 
     const msg = {
       to: email,
