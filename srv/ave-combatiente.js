@@ -1622,6 +1622,10 @@ module.exports = cds.service.impl(async function () {
       return req.reject(400, "La linea seleccionada no existe o no pertenece al usuario.");
     }
 
+    if (lineaSolicitada.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) {
+      return { linea: lineaSolicitada, cruceAbierto: true };
+    }
+
     const candidatas = await obtenerCandidatasLineaPorPadres(data.macho_ID, data.hembra_ID, usuarioId);
     const candidataSolicitada = candidatas.find((linea) => linea.ID === lineaSolicitada.ID);
 
@@ -1629,19 +1633,10 @@ module.exports = cds.service.impl(async function () {
       return { linea: candidataSolicitada, cruceAbierto: false };
     }
 
-    if (candidatas.length) {
-      return { linea: candidatas[0], cruceAbierto: false };
-    }
-
-    const lineaAbierta = lineaSolicitada.nombre === LINEA_CRUCE_ABIERTO_NOMBRE
-      ? lineaSolicitada
-      : await obtenerLineaCruceAbierto(usuarioId);
-
-    if (!lineaAbierta) {
-      return req.reject(400, "No se pudo preparar la linea de cruce abierto.");
-    }
-
-    return { linea: lineaAbierta, cruceAbierto: true };
+    return req.reject(
+      400,
+      `Al menos uno de los reproductores debe tener algun porcentaje de sangre de ${lineaSolicitada.nombre} para crear este plan de cruce.`,
+    );
   }
 
   function asegurarPrefijoCodigoPlan(codigo, cruceAbierto) {
