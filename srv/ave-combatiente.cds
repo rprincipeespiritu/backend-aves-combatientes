@@ -448,7 +448,9 @@ service AveCombatienteService {
 
     action   analizarCruceAutomatico(macho_ID: UUID,
                                      hembra_ID: UUID,
-                                     generaciones: Integer)                                                                                             returns {
+                                     generaciones: Integer,
+                                     linea_ID: UUID)                                                                                                    returns {
+        tipoCruce        : String;
         tipoParentesco   : String;
         nivelRiesgo      : String;
         porcentaje       : Decimal(5, 2);

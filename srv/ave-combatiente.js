@@ -2016,8 +2016,16 @@ module.exports = cds.service.impl(async function () {
   this.before("CREATE", PlanesCruces, async (req) => {
     const data = req.data;
     const { cruceAbierto, linea } = await validarPlanCruce(req, data);
+    const analisis = await analizarParentescoAutomatico(data.macho_ID, data.hembra_ID, data.generacionesAnalizadas || 5, linea.ID);
 
     req.data.linea_ID = linea.ID;
+    req.data.tipoCruce = analisis.tipoCruce;
+    req.data.tipoParentesco = req.data.tipoParentesco || analisis.tipoParentesco;
+    req.data.nivelRiesgo = req.data.nivelRiesgo || analisis.nivelRiesgo;
+    req.data.porcentaje = req.data.porcentaje ?? analisis.porcentaje;
+    req.data.ancestrosComunes = req.data.ancestrosComunes || analisis.ancestrosComunes;
+    req.data.decision = req.data.decision || analisis.decision;
+    req.data.recomendacion = req.data.recomendacion || analisis.recomendacion;
     req.data.codigo = asegurarPrefijoCodigoPlan(req.data.codigo, cruceAbierto);
   });
 
@@ -2034,10 +2042,23 @@ module.exports = cds.service.impl(async function () {
     if (dataCompleta.estado === "ELIMINADO") return;
 
     const { cruceAbierto, linea } = await validarPlanCruce(req, dataCompleta, planId);
+    const analisis = await analizarParentescoAutomatico(
+      dataCompleta.macho_ID,
+      dataCompleta.hembra_ID,
+      dataCompleta.generacionesAnalizadas || 5,
+      linea.ID,
+    );
 
     req.data.linea_ID = linea.ID;
     req.data.macho_ID = dataCompleta.macho_ID;
     req.data.hembra_ID = dataCompleta.hembra_ID;
+    req.data.tipoCruce = analisis.tipoCruce;
+    req.data.tipoParentesco = req.data.tipoParentesco || dataCompleta.tipoParentesco || analisis.tipoParentesco;
+    req.data.nivelRiesgo = req.data.nivelRiesgo || dataCompleta.nivelRiesgo || analisis.nivelRiesgo;
+    req.data.porcentaje = req.data.porcentaje ?? dataCompleta.porcentaje ?? analisis.porcentaje;
+    req.data.ancestrosComunes = req.data.ancestrosComunes || dataCompleta.ancestrosComunes || analisis.ancestrosComunes;
+    req.data.decision = req.data.decision || dataCompleta.decision || analisis.decision;
+    req.data.recomendacion = req.data.recomendacion || dataCompleta.recomendacion || analisis.recomendacion;
     req.data.codigo = asegurarPrefijoCodigoPlan(dataCompleta.codigo, cruceAbierto);
   });
 
@@ -3066,7 +3087,79 @@ module.exports = cds.service.impl(async function () {
     return descripciones[tipoParentesco] || "Parentesco detectado.";
   }
 
-  async function analizarParentescoAutomatico(machoId, hembraId, generaciones = 5) {
+  async function obtenerResumenComposicionCruce(machoId, hembraId, lineaId) {
+    await Promise.all([
+      recalcularComposicionLineaAve(machoId),
+      recalcularComposicionLineaAve(hembraId),
+    ]);
+
+    const [composicionMacho, composicionHembra] = await Promise.all([
+      obtenerComposicionBaseAve(machoId),
+      obtenerComposicionBaseAve(hembraId),
+    ]);
+
+    const machoMap = new Map((composicionMacho || []).map((item) => [item.linea_ID, Number(item.porcentaje || 0)]));
+    const hembraMap = new Map((composicionHembra || []).map((item) => [item.linea_ID, Number(item.porcentaje || 0)]));
+    const lineasMacho = Array.from(machoMap.keys()).filter(Boolean);
+    const lineasHembra = Array.from(hembraMap.keys()).filter(Boolean);
+    const lineasComunes = lineasMacho.filter((id) => hembraMap.has(id));
+    const porcentajeMachoLinea = lineaId ? Number(machoMap.get(lineaId) || 0) : 0;
+    const porcentajeHembraLinea = lineaId ? Number(hembraMap.get(lineaId) || 0) : 0;
+
+    return {
+      composicionMacho,
+      composicionHembra,
+      lineasMacho,
+      lineasHembra,
+      lineasComunes,
+      porcentajeMachoLinea,
+      porcentajeHembraLinea,
+      tieneLineaSolicitada: porcentajeMachoLinea > 0 || porcentajeHembraLinea > 0,
+      ambosTienenLineaSolicitada: porcentajeMachoLinea > 0 && porcentajeHembraLinea > 0,
+      ambosSinLinea: lineasMacho.length === 0 && lineasHembra.length === 0,
+    };
+  }
+
+  async function clasificarTipoCruceTecnico({ machoId, hembraId, lineaId, tipoParentesco, porcentajeConsanguinidad }) {
+    const parentesco = String(tipoParentesco || "").toUpperCase();
+    const porcentaje = Number(porcentajeConsanguinidad || 0);
+
+    if (["PADRE_HIJA", "MADRE_HIJO", "HERMANOS_COMPLETOS"].includes(parentesco) || porcentaje >= 25) {
+      return "INBREEDING";
+    }
+
+    if (
+      ["ABUELO_NIETA", "ABUELA_NIETO", "TIO_SOBRINA", "TIA_SOBRINO", "MEDIO_HERMANOS", "PRIMOS", "PARENTESCO_LEJANO"].includes(parentesco) ||
+      porcentaje > 0
+    ) {
+      return "LINEBREEDING";
+    }
+
+    const resumen = await obtenerResumenComposicionCruce(machoId, hembraId, lineaId);
+
+    if (resumen.ambosSinLinea) {
+      return "CRUCE_ABIERTO";
+    }
+
+    if (lineaId && resumen.tieneLineaSolicitada) {
+      if (resumen.ambosTienenLineaSolicitada) {
+        return "CRUCE_POR_LINAJE";
+      }
+      return "BACKCROSS";
+    }
+
+    if (resumen.lineasMacho.length && resumen.lineasHembra.length && !resumen.lineasComunes.length) {
+      return "OUTCROSS";
+    }
+
+    if (resumen.lineasComunes.length) {
+      return "CRUCE_POR_LINAJE";
+    }
+
+    return "CRUCE_ABIERTO";
+  }
+
+  async function analizarParentescoAutomatico(machoId, hembraId, generaciones = 5, lineaId = null) {
     const maxGeneraciones = Math.min(Math.max(Number(generaciones) || 5, 1), 8);
     const macho = await obtenerAveBasica(machoId);
     const hembra = await obtenerAveBasica(hembraId);
@@ -3123,8 +3216,16 @@ module.exports = cds.service.impl(async function () {
 
     porcentaje = Number(Math.min(porcentaje, 100).toFixed(2));
     const clasificacion = clasificarCruce(porcentaje);
+    const tipoCruce = await clasificarTipoCruceTecnico({
+      machoId,
+      hembraId,
+      lineaId,
+      tipoParentesco,
+      porcentajeConsanguinidad: porcentaje,
+    });
 
     return {
+      tipoCruce,
       tipoParentesco,
       nivelRiesgo: clasificacion.nivelRiesgo,
       porcentaje,
@@ -3592,14 +3693,14 @@ module.exports = cds.service.impl(async function () {
   });
 
   this.on("analizarCruceAutomatico", async (req) => {
-    const { macho_ID, hembra_ID, generaciones } = req.data;
+    const { macho_ID, hembra_ID, generaciones, linea_ID } = req.data;
 
     if (!macho_ID || !hembra_ID) {
       return req.reject(400, "Debe seleccionar macho y hembra.");
     }
 
     try {
-      return await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5);
+      return await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5, linea_ID || null);
     } catch (error) {
       return req.reject(400, error.message);
     }
