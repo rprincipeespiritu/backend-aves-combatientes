@@ -589,6 +589,7 @@ entity PlanCruce : cuid, managed {
     macho                  : Association to Ave             @mandatory;
     hembra                 : Association to Ave             @mandatory;
 
+    tipoCruce              : String(50);
     tipoParentesco         : String(50);
     objetivoCruce          : String(500);
 
