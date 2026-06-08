@@ -244,6 +244,22 @@ service AveCombatienteService {
                             resultado: String,
                             observaciones: String)                                                                                                      returns Peleas;
 
+    action   registrarCombate(ave_ID: String,
+                              combatienteB_ID: String,
+                              ambosPropios: Boolean,
+                              fecha: String,
+                              tipoCombate: String,
+                              lugar: String,
+                              evento: String,
+                              nombreOponente: String,
+                              propietarioOponente: String,
+                              procedenciaOponente: String,
+                              resultado: String,
+                              metodoVictoria: String,
+                              premioDinero: Decimal,
+                              lesiones: String,
+                              observaciones: String)                                                                                                    returns Peleas;
+
     action   prepararCargaVideoCombate(peleaId: String,
                                        nombreArchivo: String,
                                        mimeType: String,
