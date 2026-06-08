@@ -595,7 +595,7 @@ module.exports = cds.service.impl(async function () {
 
     // Verificar permisos por rol
     const rol = req.jwtUser.rol;
-    const operacion = req.event; // READ, CREATE, UPDATE, DELETE
+    let operacion = req.event; // READ, CREATE, UPDATE, DELETE
     const entidadRaw = req.target?.name || req.entity || "";
     const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
 
@@ -656,7 +656,11 @@ module.exports = cds.service.impl(async function () {
       IncubacionDetalles: "IncubacionDetalles",
     };
 
-    const entidadServicio = ENTIDAD_MAP[entidad];
+    let entidadServicio = ENTIDAD_MAP[entidad];
+    if (req.event === "registrarCombate") {
+      operacion = "CREATE";
+      entidadServicio = "Peleas";
+    }
     const permisosRol = PERMISOS_ROL[rol];
 
     if (!permisosRol) return req.reject(403, `Rol desconocido: ${rol}`);
@@ -2416,9 +2420,9 @@ module.exports = cds.service.impl(async function () {
       req.error(404, "Ave no encontrada");
     }
 
-    if (aveData.estado !== "ACTIVO") {
-      req.error(400, "El ave no está activa");
-    }
+    // if (aveData.estado !== "ACTIVO") {
+    //   req.error(400, "El ave no está activa");
+    // }
 
     // Verificar que no haya peleas muy recientes (menos de 30 días)
     if (ambosPropios) {
@@ -2435,9 +2439,9 @@ module.exports = cds.service.impl(async function () {
         req.error(404, "Combatiente B no encontrado para el usuario actual.");
       }
 
-      if (combatienteB.estado !== "ACTIVO") {
-        req.error(400, "El Combatiente B no esta activo");
-      }
+      // if (combatienteB.estado !== "ACTIVO") {
+      //   req.error(400, "El Combatiente B no esta activo");
+      // }
 
       req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
       req.data.propietarioOponente = null;
@@ -2456,6 +2460,144 @@ module.exports = cds.service.impl(async function () {
     if (peleasRecientes.length > 0) {
       req.warn("El ave tuvo una pelea en los últimos 30 días");
     }
+  });
+
+  this.on("registrarCombate", async (req) => {
+    const {
+      ave_ID,
+      combatienteB_ID,
+      ambosPropios,
+      fecha,
+      tipoCombate,
+      lugar,
+      evento,
+      nombreOponente,
+      propietarioOponente,
+      procedenciaOponente,
+      resultado,
+      metodoVictoria,
+      premioDinero,
+      lesiones,
+      observaciones,
+    } = req.data;
+    const userId = req.jwtUser?.id;
+    const esAmbosPropios = ambosPropios !== false;
+    const db = await cds.connect.to("db");
+
+    if (userId && MAX_REGISTROS_COMBATES_POR_USUARIO > 0) {
+      const totalPeleas = await SELECT.one
+        .from(Peleas)
+        .where({ usuario_ID: userId })
+        .columns("count(1) as total");
+      const totalActual = Number(totalPeleas?.total || 0);
+
+      if (totalActual >= MAX_REGISTROS_COMBATES_POR_USUARIO) {
+        return req.error(
+          403,
+          `Por ahora solo puedes registrar hasta ${MAX_REGISTROS_COMBATES_POR_USUARIO} combates. En produccion se habilitara sin limite.`,
+        );
+      }
+    }
+
+    if (!ave_ID) {
+      return req.error(400, "Debe seleccionar el Combatiente A.");
+    }
+
+    if (!fecha || !tipoCombate) {
+      return req.error(400, "Debe indicar fecha y tipo de combate.");
+    }
+
+    if (esAmbosPropios && !combatienteB_ID) {
+      return req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    if (!esAmbosPropios && !nombreOponente) {
+      return req.error(400, "Debe indicar el nombre del gallo rival.");
+    }
+
+    if (!esAmbosPropios && !propietarioOponente) {
+      return req.error(400, "Debe indicar el propietario del gallo rival.");
+    }
+
+    const aveData = await SELECT.one.from(Aves).where({
+      ID: ave_ID,
+      usuario_ID: userId,
+    });
+
+    if (!aveData) {
+      return req.error(404, "Ave no encontrada");
+    }
+
+    // if (aveData.estado !== "ACTIVO") {
+    //   return req.error(400, "El ave no estÃ¡ activa");
+    // }
+
+    let nombreRival = nombreOponente || null;
+    let propietarioRival = propietarioOponente || null;
+    let procedenciaRival = procedenciaOponente || null;
+    let combatienteBId = null;
+
+    if (esAmbosPropios) {
+      if (esMismoId(combatienteB_ID, ave_ID)) {
+        return req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteB_ID,
+        usuario_ID: userId,
+      });
+
+      if (!combatienteB) {
+        return req.error(404, "Combatiente B no encontrado para el usuario actual.");
+      }
+
+      // if (combatienteB.estado !== "ACTIVO") {
+      //   return req.error(400, "El Combatiente B no esta activo");
+      // }
+
+      combatienteBId = combatienteB_ID;
+      nombreRival = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      propietarioRival = null;
+      procedenciaRival = null;
+    }
+
+    const hace30Dias = new Date();
+    hace30Dias.setDate(hace30Dias.getDate() - 30);
+
+    const peleasRecientes = await SELECT.from(Peleas)
+      .where({ ave_ID })
+      .and({ fecha: { ">": hace30Dias.toISOString() } });
+
+    if (peleasRecientes.length > 0) {
+      req.warn("El ave tuvo una pelea en los Ãºltimos 30 dÃ­as");
+    }
+
+    const nuevaPelea = {
+      ID: crypto.randomUUID(),
+      ave_ID,
+      combatienteB_ID: combatienteBId,
+      usuario_ID: userId,
+      ambosPropios: esAmbosPropios,
+      fecha,
+      tipoCombate,
+      lugar: lugar || null,
+      evento: evento || null,
+      nombreOponente: nombreRival,
+      propietarioOponente: propietarioRival,
+      procedenciaOponente: procedenciaRival,
+      resultado: resultado || null,
+      metodoVictoria: metodoVictoria || null,
+      premioDinero: premioDinero === null || premioDinero === undefined || premioDinero === "" ? null : Number(premioDinero),
+      lesiones: lesiones || null,
+      observaciones: observaciones || null,
+    };
+
+    await db.run(INSERT.into(Peleas).entries(nuevaPelea));
+
+    return SELECT.one.from(Peleas).where({
+      ID: nuevaPelea.ID,
+      usuario_ID: userId,
+    });
   });
 
   this.before(["UPDATE", "DELETE"], "Peleas", async (req) => {
