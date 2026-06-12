@@ -176,6 +176,12 @@ function esMismoId(idA, idB) {
   return !!idA && !!idB && String(idA) === String(idB);
 }
 
+function normalizarDateTimeCAP(valor) {
+  const texto = String(valor || "").trim();
+  if (!texto) return "";
+  return texto.replace(/\.\d{3}Z$/, "").replace(/Z$/, "").slice(0, 19);
+}
+
 function construirUrlS3(bucket, storageKey) {
   return `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/${storageKey}`;
 }
@@ -2374,6 +2380,8 @@ module.exports = cds.service.impl(async function () {
     const aveId = req.data.ave_ID || req.data.ave?.ID;
     const combatienteBId = req.data.combatienteB_ID || req.data.combatienteB?.ID;
     const ambosPropios = req.data.ambosPropios !== false;
+    const textoCombatienteA = String(req.data.combatienteATexto || "").trim();
+    const textoCombatienteB = String(req.data.combatienteBTexto || "").trim();
 
     if (req.jwtUser?.id) {
       req.data.usuario_ID = req.jwtUser.id;
@@ -2394,30 +2402,32 @@ module.exports = cds.service.impl(async function () {
       }
     }
 
-    if (!aveId) {
-      return req.error(400, "Debe seleccionar el Combatiente A.");
+    if (!aveId && !textoCombatienteA) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
     }
 
-    if (ambosPropios && !combatienteBId) {
-      return req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    if (ambosPropios && !combatienteBId && !textoCombatienteB) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
     }
 
-    if (!ambosPropios && !req.data.nombreOponente) {
-      return req.error(400, "Debe indicar el nombre del gallo rival.");
-    }
+    // if (!ambosPropios && !req.data.nombreOponente) {
+    //   return req.error(400, "Debe indicar el nombre del gallo rival.");
+    // }
 
-    if (!ambosPropios && !req.data.propietarioOponente) {
-      return req.error(400, "Debe indicar el propietario del gallo rival.");
-    }
+    // if (!ambosPropios && !req.data.propietarioOponente) {
+    //   return req.error(400, "Debe indicar el propietario del gallo rival.");
+    // }
 
     // Verificar que el ave esté activa
-    const aveData = await SELECT.one.from(Aves).where({
-      ID: aveId,
-      usuario_ID: req.jwtUser?.id,
-    });
+    if (aveId) {
+      const aveData = await SELECT.one.from(Aves).where({
+        ID: aveId,
+        usuario_ID: req.jwtUser?.id,
+      });
 
-    if (!aveData) {
-      req.error(404, "Ave no encontrada");
+      if (!aveData) {
+        req.error(404, "Ave no encontrada");
+      }
     }
 
     // if (aveData.estado !== "ACTIVO") {
@@ -2425,7 +2435,7 @@ module.exports = cds.service.impl(async function () {
     // }
 
     // Verificar que no haya peleas muy recientes (menos de 30 días)
-    if (ambosPropios) {
+    if (ambosPropios && combatienteBId) {
       if (esMismoId(combatienteBId, aveId)) {
         req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
       }
@@ -2446,6 +2456,10 @@ module.exports = cds.service.impl(async function () {
       req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
       req.data.propietarioOponente = null;
       req.data.procedenciaOponente = null;
+    } else if (ambosPropios) {
+      req.data.nombreOponente = textoCombatienteB;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
     } else {
       req.data.combatienteB_ID = null;
     }
@@ -2453,9 +2467,11 @@ module.exports = cds.service.impl(async function () {
     const hace30Dias = new Date();
     hace30Dias.setDate(hace30Dias.getDate() - 30);
 
-    const peleasRecientes = await SELECT.from(Peleas)
-      .where({ ave_ID: aveId })
-      .and({ fecha: { ">": hace30Dias.toISOString() } });
+    const peleasRecientes = aveId
+      ? await SELECT.from(Peleas)
+        .where({ ave_ID: aveId })
+        .and({ fecha: { ">": hace30Dias.toISOString() } })
+      : [];
 
     if (peleasRecientes.length > 0) {
       req.warn("El ave tuvo una pelea en los últimos 30 días");
@@ -2465,7 +2481,9 @@ module.exports = cds.service.impl(async function () {
   this.on("registrarCombate", async (req) => {
     const {
       ave_ID,
+      combatienteATexto,
       combatienteB_ID,
+      combatienteBTexto,
       ambosPropios,
       fecha,
       tipoCombate,
@@ -2483,6 +2501,8 @@ module.exports = cds.service.impl(async function () {
     const userId = req.jwtUser?.id;
     const esAmbosPropios = ambosPropios !== false;
     const db = await cds.connect.to("db");
+    const textoCombatienteA = String(combatienteATexto || "").trim();
+    const textoCombatienteB = String(combatienteBTexto || "").trim();
 
     if (userId && MAX_REGISTROS_COMBATES_POR_USUARIO > 0) {
       const totalPeleas = await SELECT.one
@@ -2499,16 +2519,16 @@ module.exports = cds.service.impl(async function () {
       }
     }
 
-    if (!ave_ID) {
-      return req.error(400, "Debe seleccionar el Combatiente A.");
+    if (!ave_ID && !textoCombatienteA) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
     }
 
     if (!fecha || !tipoCombate) {
       return req.error(400, "Debe indicar fecha y tipo de combate.");
     }
 
-    if (esAmbosPropios && !combatienteB_ID) {
-      return req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    if (esAmbosPropios && !combatienteB_ID && !textoCombatienteB) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
     }
 
     if (!esAmbosPropios && !nombreOponente) {
@@ -2519,13 +2539,16 @@ module.exports = cds.service.impl(async function () {
       return req.error(400, "Debe indicar el propietario del gallo rival.");
     }
 
-    const aveData = await SELECT.one.from(Aves).where({
-      ID: ave_ID,
-      usuario_ID: userId,
-    });
+    let aveData = null;
+    if (ave_ID) {
+      aveData = await SELECT.one.from(Aves).where({
+        ID: ave_ID,
+        usuario_ID: userId,
+      });
 
-    if (!aveData) {
-      return req.error(404, "Ave no encontrada");
+      if (!aveData) {
+        return req.error(404, "Ave no encontrada");
+      }
     }
 
     // if (aveData.estado !== "ACTIVO") {
@@ -2536,8 +2559,9 @@ module.exports = cds.service.impl(async function () {
     let propietarioRival = propietarioOponente || null;
     let procedenciaRival = procedenciaOponente || null;
     let combatienteBId = null;
+    let textoRivalPropio = textoCombatienteB || null;
 
-    if (esAmbosPropios) {
+    if (esAmbosPropios && combatienteB_ID) {
       if (esMismoId(combatienteB_ID, ave_ID)) {
         return req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
       }
@@ -2556,7 +2580,12 @@ module.exports = cds.service.impl(async function () {
       // }
 
       combatienteBId = combatienteB_ID;
+      textoRivalPropio = null;
       nombreRival = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      propietarioRival = null;
+      procedenciaRival = null;
+    } else if (esAmbosPropios) {
+      nombreRival = textoRivalPropio;
       propietarioRival = null;
       procedenciaRival = null;
     }
@@ -2564,9 +2593,11 @@ module.exports = cds.service.impl(async function () {
     const hace30Dias = new Date();
     hace30Dias.setDate(hace30Dias.getDate() - 30);
 
-    const peleasRecientes = await SELECT.from(Peleas)
-      .where({ ave_ID })
-      .and({ fecha: { ">": hace30Dias.toISOString() } });
+    const peleasRecientes = ave_ID
+      ? await SELECT.from(Peleas)
+        .where({ ave_ID })
+        .and({ fecha: { ">": hace30Dias.toISOString() } })
+      : [];
 
     if (peleasRecientes.length > 0) {
       req.warn("El ave tuvo una pelea en los Ãºltimos 30 dÃ­as");
@@ -2574,11 +2605,13 @@ module.exports = cds.service.impl(async function () {
 
     const nuevaPelea = {
       ID: crypto.randomUUID(),
-      ave_ID,
+      ave_ID: ave_ID || null,
+      combatienteATexto: ave_ID ? null : textoCombatienteA,
       combatienteB_ID: combatienteBId,
+      combatienteBTexto: combatienteBId ? null : textoRivalPropio,
       usuario_ID: userId,
       ambosPropios: esAmbosPropios,
-      fecha,
+      fecha: normalizarDateTimeCAP(fecha),
       tipoCombate,
       lugar: lugar || null,
       evento: evento || null,
@@ -2617,17 +2650,35 @@ module.exports = cds.service.impl(async function () {
 
     if (req.event !== "UPDATE") return;
 
+    const camposActualizados = Object.keys(req.data || {}).filter((campo) => campo !== "ID");
+    const soloActualizaVideo = camposActualizados.length > 0 && camposActualizados.every((campo) =>
+      [
+        "videoUrl",
+        "videoStorageProvider",
+        "videoStorageBucket",
+        "videoStorageKey",
+        "videoNombreArchivo",
+        "videoMimeType",
+        "videoSizeBytes",
+        "videoEstadoCarga",
+      ].includes(campo),
+    );
+
+    if (soloActualizaVideo) return;
+
     const data = { ...pelea, ...req.data };
     const aveId = data.ave_ID || data.ave?.ID;
     const combatienteBId = data.combatienteB_ID || data.combatienteB?.ID;
     const ambosPropios = data.ambosPropios !== false;
+    const textoCombatienteA = String(data.combatienteATexto || "").trim();
+    const textoCombatienteB = String(data.combatienteBTexto || "").trim();
 
-    if (!aveId) {
-      req.error(400, "Debe seleccionar el Combatiente A.");
+    if (!aveId && !textoCombatienteA) {
+      req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
     }
 
-    if (ambosPropios && !combatienteBId) {
-      req.error(400, "Debe seleccionar el Combatiente B cuando ambas aves son propias.");
+    if (ambosPropios && !combatienteBId && !textoCombatienteB) {
+      req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
     }
 
     if (!ambosPropios && !data.nombreOponente) {
@@ -2638,7 +2689,7 @@ module.exports = cds.service.impl(async function () {
       req.error(400, "Debe indicar el propietario del gallo rival.");
     }
 
-    if (ambosPropios) {
+    if (ambosPropios && combatienteBId) {
       if (esMismoId(combatienteBId, aveId)) {
         req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
       }
@@ -2653,6 +2704,10 @@ module.exports = cds.service.impl(async function () {
       }
 
       req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else if (ambosPropios) {
+      req.data.nombreOponente = textoCombatienteB;
       req.data.propietarioOponente = null;
       req.data.procedenciaOponente = null;
     } else {

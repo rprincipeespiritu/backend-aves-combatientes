@@ -192,9 +192,11 @@ entity Pesaje : cuid, managed {
 
 entity Pelea : cuid, managed {
     // Combatiente A: siempre pertenece al usuario de la app
-    ave                 : Association to Ave @mandatory;
+    ave                 : Association to Ave;
+    combatienteATexto   : String(120);
     // Combatiente B: se usa cuando ambos combatientes pertenecen al usuario
     combatienteB        : Association to Ave;
+    combatienteBTexto   : String(120);
     usuario             : Association to Usuario;
     fecha               : DateTime           @mandatory;
     tipoCombate         : String(20) default 'PRUEBA' @assert.enum: {

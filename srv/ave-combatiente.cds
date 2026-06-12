@@ -245,7 +245,9 @@ service AveCombatienteService {
                             observaciones: String)                                                                                                      returns Peleas;
 
     action   registrarCombate(ave_ID: String,
+                              combatienteATexto: String,
                               combatienteB_ID: String,
+                              combatienteBTexto: String,
                               ambosPropios: Boolean,
                               fecha: String,
                               tipoCombate: String,
