@@ -18,14 +18,14 @@ const PLANES_SUSCRIPCION = {
     maxAves: 500,
     maxPollitos: 1000,
     maxIncubaciones: 250,
-    precioMensual: 79,
+    precioMensual: 49,
   },
   PREMIUM: {
     dias: 30,
     maxAves: 999999,
     maxPollitos: 999999,
     maxIncubaciones: 999999,
-    precioMensual: 149,
+    precioMensual: 99,
   },
 };
 
@@ -35,7 +35,7 @@ const MODULOS_POR_PLAN = {
   ],
   BASICO: [
     "Aves",
-    "ComposicionesLineaAve",
+    // "ComposicionesLineaAve",
     "Crias",
     "Incubaciones",
     "IncubacionDetalles",
