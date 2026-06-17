@@ -1,20 +1,60 @@
 const cds = require("@sap/cds");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
+const sgMail = require("@sendgrid/mail");
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const {
+  MODULOS_POR_PLAN,
+  PLANES_SUSCRIPCION,
+  construirDatosSuscripcion,
+  fechaISO,
+  getPlanConfig,
+  sumarDias,
+} = require("./subscription-config");
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "1h";
+const VIDEO_COMBATE_MAX_BYTES = Number(process.env.COMBATE_VIDEO_MAX_BYTES || 524288000);
+const VIDEO_STORAGE_PROVIDER = process.env.COMBATE_VIDEO_PROVIDER || "AWS_S3";
+const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || "";
+const AWS_S3_COMBATES_BUCKET = process.env.AWS_S3_COMBATES_BUCKET || AWS_S3_BUCKET;
+const AWS_S3_AVES_BUCKET = process.env.AWS_S3_AVES_BUCKET || AWS_S3_BUCKET;
+const AWS_S3_REGION =
+  process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+const AWS_S3_PRESIGN_EXPIRES_SECONDS = Number(
+  process.env.AWS_S3_PRESIGN_EXPIRES_SECONDS || 900,
+);
+const ARCHIVO_AVE_MAX_BYTES = Number(process.env.ARCHIVO_AVE_MAX_BYTES || 104857600);
+const MAX_REGISTROS_COMBATES_POR_USUARIO = Number(
+  process.env.MAX_REGISTROS_COMBATES_POR_USUARIO || 10,
+);
+const AWS_S3_ENV_PREFIX = String(process.env.AWS_S3_ENV_PREFIX || "dev")
+  .trim()
+  .replace(/^\/+|\/+$/g, "");
+const LINEA_CRUCE_ABIERTO_NOMBRE = "Cruce abierto";
+const s3Client = new S3Client({ region: AWS_S3_REGION });
+
+const nodemailer = require("nodemailer");
 
 //============================================
 // PERMISOS POR ROL
 //============================================
 const PERMISOS_ROL = {
   ADMIN: {
-    Aves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Aves: ["READ", "CREATE", "UPDATE", "DELETE", "recalcularComposicionLineas"],
+    Crias: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
-    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
+    LineasAves: ["READ", "CREATE", "UPDATE", "DELETE"],
+    ComposicionesLineaAve: ["READ", "CREATE", "UPDATE", "DELETE"],
+    PlanesCruces: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Tratamientos: ["READ", "CREATE", "UPDATE", "DELETE"],
     Alimentaciones: ["READ", "CREATE", "UPDATE", "DELETE"],
     Transacciones: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -26,14 +66,21 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ", "CREATE", "UPDATE", "DELETE"],
     FotosPelea: ["READ", "CREATE", "UPDATE", "DELETE"],
     Usuarios: ["READ", "CREATE", "UPDATE", "DELETE"],
+    Suscripciones: ["READ", "CREATE", "UPDATE", "DELETE"],
     Roles: ["READ", "CREATE", "UPDATE", "DELETE"],
     Historial: ["READ"],
   },
   CRIADOR: {
-    Aves: ["READ", "CREATE", "UPDATE"],
+    Aves: ["READ", "CREATE", "UPDATE", "recalcularComposicionLineas"],
+    Crias: ["READ", "CREATE", "UPDATE"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
-    Peleas: ["READ", "CREATE", "UPDATE"],
+    Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
     Incubaciones: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
+    LineasAves: ["READ", "CREATE", "UPDATE"],
+    ComposicionesLineaAve: ["READ", "CREATE", "UPDATE"],
+    PlanesCruces: ["READ", "CREATE", "UPDATE"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ", "CREATE", "UPDATE"],
     Transacciones: ["READ", "CREATE"],
@@ -45,14 +92,21 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ", "CREATE", "UPDATE", "DELETE"],
     FotosPelea: ["READ", "CREATE"],
     Usuarios: [],
+    Suscripciones: ["READ", "UPDATE"],
     Roles: [],
     Historial: [],
   },
   VETERINARIO: {
     Aves: ["READ"],
+    Crias: ["READ"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
+    EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
+    EvaluacionesPleito: ["READ", "CREATE", "UPDATE"],
+    LineasAves: ["READ"],
+    ComposicionesLineaAve: ["READ"],
+    PlanesCruces: ["READ"],
     Tratamientos: ["READ", "CREATE", "UPDATE"],
     Alimentaciones: ["READ", "CREATE"],
     Transacciones: [],
@@ -64,14 +118,21 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ"],
     FotosPelea: [],
     Usuarios: [],
+    Suscripciones: ["READ"],
     Roles: [],
     Historial: [],
   },
   VIEWER: {
     Aves: ["READ"],
+    Crias: ["READ"],
     Pesajes: ["READ"],
     Peleas: ["READ"],
     Incubaciones: ["READ"],
+    EvaluacionesAves: ["READ"],
+    EvaluacionesPleito: ["READ"],
+    LineasAves: ["READ"],
+    ComposicionesLineaAve: ["READ"],
+    PlanesCruces: ["READ"],
     Tratamientos: ["READ"],
     Alimentaciones: ["READ"],
     Transacciones: [],
@@ -83,6 +144,7 @@ const PERMISOS_ROL = {
     DocumentosAve: ["READ"],
     FotosPelea: ["READ"],
     Usuarios: [],
+    Suscripciones: ["READ"],
     Roles: [],
     Historial: [],
   },
@@ -99,6 +161,155 @@ const METODO_A_OPERACION = {
 function extraerEntidad(path) {
   const match = path.match(/\/api\/avecombatiente\/([A-Za-z]+)/);
   return match ? match[1] : null;
+}
+
+function normalizarNombreArchivo(nombreArchivo = "combate.mp4") {
+  return String(nombreArchivo)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
+}
+
+function esMismoId(idA, idB) {
+  return !!idA && !!idB && String(idA) === String(idB);
+}
+
+function normalizarDateTimeCAP(valor) {
+  const texto = String(valor || "").trim();
+  if (!texto) return "";
+  return texto.replace(/\.\d{3}Z$/, "").replace(/Z$/, "").slice(0, 19);
+}
+
+function construirUrlS3(bucket, storageKey) {
+  return `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/${storageKey}`;
+}
+
+function construirStorageKeyS3(...parts) {
+  return [AWS_S3_ENV_PREFIX, ...parts]
+    .filter((part) => part !== undefined && part !== null && String(part).trim() !== "")
+    .map((part) => String(part).replace(/^\/+|\/+$/g, ""))
+    .join("/");
+}
+
+function normalizarUrlBase(rawUrl, fallback = "http://localhost:4004") {
+  let value = String(rawUrl || fallback).trim();
+
+  // Railway/env values sometimes arrive without protocol or copied with brackets.
+  value = value.replace(/^\[+|\]+$/g, "").trim();
+
+  if (!/^https?:\/\//i.test(value)) {
+    const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(value);
+    value = `${isLocal ? "http" : "https"}://${value}`;
+  }
+
+  return value.replace(/\/+$/g, "");
+}
+
+function construirLinkActivacion(tokenActivacion) {
+  const appUrl = normalizarUrlBase(process.env.APP_URL);
+  const url = new URL("/activar-cuenta", appUrl);
+  url.searchParams.set("token", tokenActivacion);
+  return url.toString();
+}
+
+async function crearUploadUrlS3({ bucket, storageKey, mimeType }) {
+  if (!bucket) return null;
+
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: storageKey,
+    ContentType: mimeType,
+  });
+
+  return getSignedUrl(s3Client, command, {
+    expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+  });
+}
+
+async function crearDownloadUrlS3({ bucket, storageKey }) {
+  if (!bucket) return null;
+
+  const command = new GetObjectCommand({
+    Bucket: bucket,
+    Key: storageKey,
+  });
+
+  return getSignedUrl(s3Client, command, {
+    expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+  });
+}
+
+function obtenerObjetoDesdeUrlS3(fileUrl) {
+  const value = String(fileUrl || "");
+  const allowedBuckets = new Set(
+    [AWS_S3_BUCKET, AWS_S3_AVES_BUCKET, AWS_S3_COMBATES_BUCKET].filter(Boolean),
+  );
+
+  for (const bucket of allowedBuckets) {
+    const prefix = `https://${bucket}.s3.${AWS_S3_REGION}.amazonaws.com/`;
+    if (value.startsWith(prefix)) {
+      return {
+        bucket,
+        storageKey: decodeURIComponent(value.slice(prefix.length)),
+      };
+    }
+  }
+
+  return null;
+}
+
+function construirMetadataVideoCombate({ peleaId, usuarioId, nombreArchivo, mimeType }) {
+  const safeName = normalizarNombreArchivo(nombreArchivo);
+  const storageKey = construirStorageKeyS3(
+    "combates",
+    usuarioId || "sin-usuario",
+    peleaId,
+    `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
+  );
+  const bucket = AWS_S3_COMBATES_BUCKET || "pendiente-configurar-bucket-s3";
+  const videoUrl = AWS_S3_COMBATES_BUCKET
+    ? construirUrlS3(bucket, storageKey)
+    : `s3://${bucket}/${storageKey}`;
+
+  return {
+    storageProvider: VIDEO_STORAGE_PROVIDER,
+    storageBucket: bucket,
+    storageKey,
+    videoUrl,
+    uploadUrl: null,
+    estadoCarga: AWS_S3_COMBATES_BUCKET ? "PENDIENTE_SUBIDA" : "PENDIENTE_CONFIGURACION",
+    mimeType,
+    nombreArchivo: safeName,
+  };
+}
+
+function construirMetadataArchivoAve({ aveId, usuarioId, nombreArchivo, mimeType, tipo }) {
+  const safeName = normalizarNombreArchivo(nombreArchivo || "archivo");
+  const tipoCarpeta = tipo === "VIDEO" ? "videos" : "fotos";
+  const storageKey = construirStorageKeyS3(
+    "aves",
+    usuarioId || "sin-usuario",
+    aveId,
+    tipoCarpeta,
+    `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
+  );
+  const bucket = AWS_S3_AVES_BUCKET || "pendiente-configurar-bucket-s3";
+  const fileUrl = AWS_S3_AVES_BUCKET
+    ? construirUrlS3(bucket, storageKey)
+    : `s3://${bucket}/${storageKey}`;
+
+  return {
+    storageProvider: "AWS_S3",
+    storageBucket: bucket,
+    storageKey,
+    fileUrl,
+    uploadUrl: null,
+    mimeType,
+    nombreArchivo: safeName,
+    tipo,
+  };
 }
 
 //============================================
@@ -167,20 +378,205 @@ function middlewarePermisos(req, res, next) {
 module.exports = cds.service.impl(async function () {
   const {
     Aves,
+    Crias,
     Pesajes,
     Peleas,
     Incubaciones,
+    IncubacionDetalles,
     HistorialCambios,
     FotosAve,
+    VideosAve,
     Transacciones,
     Usuario,
     Rol,
+    Suscripciones,
+    LineasAves,
+    ComposicionesLineaAve,
+    PlanesCruces,
+    EvaluacionesAves,
+    EvaluacionesPleito,
+    IncubacionesActivas,
+    AvesActivas,
+    LineasAvesActivas,
   } = this.entities;
+
+  function agregarFiltroUsuario(req, campoUsuario = "usuario_ID") {
+    const userId = req.jwtUser && req.jwtUser.id;
+    if (!userId || !req.query?.SELECT) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
+  }
+
+  function agregarFiltroEstadoNoEliminado(req, campoEstado = "estado") {
+    if (!req.query?.SELECT) return;
+
+    if (!req.query.SELECT.where) {
+      req.query.SELECT.where = [];
+    } else if (req.query.SELECT.where.length > 0) {
+      req.query.SELECT.where.push("and");
+    }
+
+    req.query.SELECT.where.push({ ref: [campoEstado] }, "!=", { val: "ELIMINADO" });
+  }
+
+  function calcularDiasRestantes(fechaFin) {
+    if (!fechaFin) return 0;
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const fin = new Date(fechaFin);
+    fin.setHours(0, 0, 0, 0);
+    return Math.ceil((fin.getTime() - hoy.getTime()) / (24 * 60 * 60 * 1000));
+  }
+
+  function moduloPermitidoPorPlan(plan, entidadServicio) {
+    const modulos = MODULOS_POR_PLAN[String(plan || "").toUpperCase()] || [];
+    return modulos.includes("*") || modulos.includes(entidadServicio);
+  }
+
+  async function validarPlanPremiumMultimedia(req) {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) {
+      return req.reject(401, "No se pudo identificar el usuario actual.");
+    }
+
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+    const diasRestantes = suscripcion ? calcularDiasRestantes(suscripcion.fechaFin) : 0;
+    const tienePremium =
+      suscripcion &&
+      moduloPermitidoPorPlan(suscripcion.plan, "FotosAve") &&
+      moduloPermitidoPorPlan(suscripcion.plan, "VideosAve") &&
+      ["ACTIVA", "CANCELADA"].includes(suscripcion.estado) &&
+      diasRestantes >= 0;
+
+    if (!tienePremium) {
+      return req.reject(403, "Las fotos y videos solo estan disponibles para el plan Premium o prueba vigente.");
+    }
+  }
+
+  async function obtenerSuscripcionUsuario(usuarioId) {
+    const suscripciones = await SELECT
+      .from(Suscripciones)
+      .where({ usuario_ID: usuarioId })
+      .orderBy("createdAt desc");
+
+    if (!suscripciones.length) return null;
+
+    const suscripcion = suscripciones[0];
+    const diasRestantes = calcularDiasRestantes(suscripcion.fechaFin);
+
+    if (suscripciones.length > 1) {
+      await DELETE.from(Suscripciones)
+        .where({ usuario_ID: usuarioId })
+        .and({ ID: { "!=": suscripcion.ID } });
+    }
+
+    if (["ACTIVA", "CANCELADA", "PENDIENTE"].includes(suscripcion.estado) && diasRestantes < 0) {
+      await UPDATE(Suscripciones)
+        .set({ estado: "VENCIDA" })
+        .where({ ID: suscripcion.ID });
+      suscripcion.estado = "VENCIDA";
+    }
+
+    return suscripcion;
+  }
+
+  async function validarSuscripcion(req, entidadServicio) {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return;
+
+    const accionesSuscripcion = [
+      "obtenerSuscripcionActual",
+      "activarSuscripcion",
+      "crearCheckoutMercadoPago",
+      "cancelarSuscripcion",
+      "logout",
+    ];
+
+    if (accionesSuscripcion.includes(req.event)) return;
+
+    const esLectura = req.event === "READ" || req.event === "obtenerDashboard";
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+
+    if (!suscripcion) {
+      if (!esLectura) {
+        return req.reject(402, "Debes activar tu plan de prueba para continuar.");
+      }
+      return;
+    }
+
+    const diasRestantes = calcularDiasRestantes(suscripcion.fechaFin);
+
+    const tieneAccesoVigente = ["ACTIVA", "CANCELADA"].includes(suscripcion.estado) && diasRestantes >= 0;
+
+    if (!tieneAccesoVigente && !esLectura) {
+      return req.reject(402, "Tu suscripcion esta vencida. Renueva tu plan para registrar o modificar informacion.");
+    }
+
+    if (!moduloPermitidoPorPlan(suscripcion.plan, entidadServicio)) {
+      return req.reject(403, `Tu plan ${suscripcion.plan} no incluye acceso al modulo ${entidadServicio}.`);
+    }
+
+    if (req.event !== "CREATE") return;
+
+    if (entidadServicio === "Aves") {
+      const [res] = await SELECT.from(Aves)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+          etapaVida: { "!=": "POLLITO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxAves || 0)) {
+        return req.reject(402, "Alcanzaste el limite de aves adultas de tu plan.");
+      }
+    }
+
+    if (entidadServicio === "Crias") {
+      const [res] = await SELECT.from(Crias)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxPollitos || 0)) {
+        return req.reject(402, "Alcanzaste el limite de aves jovenes de tu plan.");
+      }
+    }
+
+    if (entidadServicio === "Incubaciones") {
+      const [res] = await SELECT.from(Incubaciones)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total");
+
+      if (Number(res?.total || 0) >= Number(suscripcion.maxIncubaciones || 0)) {
+        return req.reject(402, "Alcanzaste el limite de incubaciones de tu plan.");
+      }
+    }
+  }
 
   // Intercepta TODAS las operaciones del servicio
   this.before("*", async (req) => {
     // El action login no requiere token
-    if (req.event === "login" || req.event === "logout") return;
+    const accionesPublicas = [
+      "login",
+      "logout",
+      "registrarUsuario",
+      "reenviarActivacion",
+      "solicitarRecuperacionPassword",
+      "restablecerPassword",
+    ];
+    if (accionesPublicas.includes(req.event)) return;
 
     // Obtener token del header
     const authHeader =
@@ -201,38 +597,80 @@ module.exports = cds.service.impl(async function () {
       return req.reject(403, msg);
     }
 
+    if (req.event === "recalcularComposicionLineas") return;
+
     // Verificar permisos por rol
     const rol = req.jwtUser.rol;
+    let operacion = req.event; // READ, CREATE, UPDATE, DELETE
+    const entidadRaw = req.target?.name || req.entity || "";
     const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
-    const operacion = req.event; // READ, CREATE, UPDATE, DELETE
 
     if (!entidad || !operacion) return;
 
     // Mapear nombre de entidad CDS al nombre del servicio
     const ENTIDAD_MAP = {
       Ave: "Aves",
+      Aves: "Aves",
+      Cria: "Crias",
+      Crias: "Crias",
       Pesaje: "Pesajes",
+      Pesajes: "Pesajes",
       Pelea: "Peleas",
+      Peleas: "Peleas",
       Incubacion: "Incubaciones",
+      Incubaciones: "Incubaciones",
       Tratamiento: "Tratamientos",
+      Tratamientos: "Tratamientos",
       Alimentacion: "Alimentaciones",
+      Alimentaciones: "Alimentaciones",
       Transaccion: "Transacciones",
+      Transacciones: "Transacciones",
       Raza: "Razas",
+      Razas: "Razas",
       Color: "Colores",
+      Colores: "Colores",
       TipoAve: "TiposAve",
+      TiposAve: "TiposAve",
       FotoAve: "FotosAve",
+      FotosAve: "FotosAve",
       VideoAve: "VideosAve",
+      VideosAve: "VideosAve",
       DocumentoAve: "DocumentosAve",
+      DocumentosAve: "DocumentosAve",
       FotoPelea: "FotosPelea",
+      FotosPelea: "FotosPelea",
       Usuario: "Usuarios",
+      Usuarios: "Usuarios",
+      Suscripcion: "Suscripciones",
+      Suscripciones: "Suscripciones",
       Rol: "Roles",
+      Roles: "Roles",
       HistorialCambios: "Historial",
+      Historial: "Historial",
+      LineaAve: "LineasAves",
+      LineasAves: "LineasAves",
+      LineasAvesActivas: "LineasAves",
+    PlanCruce: "PlanesCruces",
+    PlanesCruces: "PlanesCruces",
+    ComposicionLineaAve: "ComposicionesLineaAve",
+    ComposicionesLineaAve: "ComposicionesLineaAve",
+    EvaluacionAve: "EvaluacionesAves",
+      EvaluacionesAves: "EvaluacionesAves",
+      EvaluacionPleito: "EvaluacionesPleito",
+      EvaluacionesPleito: "EvaluacionesPleito",
+      IncubacionDetalle: "IncubacionDetalles",
+      IncubacionDetalles: "IncubacionDetalles",
     };
 
-    const entidadServicio = ENTIDAD_MAP[entidad] || entidad;
+    let entidadServicio = ENTIDAD_MAP[entidad];
+    if (req.event === "registrarCombate") {
+      operacion = "CREATE";
+      entidadServicio = "Peleas";
+    }
     const permisosRol = PERMISOS_ROL[rol];
 
     if (!permisosRol) return req.reject(403, `Rol desconocido: ${rol}`);
+    if (!entidadServicio) return;
 
     const permisosEntidad = permisosRol[entidadServicio] || [];
     if (!permisosEntidad.includes(operacion)) {
@@ -241,6 +679,199 @@ module.exports = cds.service.impl(async function () {
         `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
       );
     }
+
+    await validarSuscripcion(req, entidadServicio);
+  });
+
+  this.on("registrarRoles", async (req) => {
+    const { codigo, nombre, descripcion, permisos, activo } = req.data;
+
+    if (!codigo || !nombre || !activo) {
+      return req.error(400, "codigo, nombre y activo son requeridos");
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario, Rol } = cds.entities("ave.combatiente");
+
+    const rolValidate = await SELECT.one
+      .from(Rol)
+      .columns("ID", "codigo", "nombre", "descripcion", "permisos", "activo")
+      .where({ codigo });
+
+    if (rolValidate) {
+      return req.error(409, "El Rol ya está registrado");
+    }
+
+    // Crear usuario
+    const obj = {
+      ID: require("crypto").randomUUID(),
+      codigo: codigo,
+      nombre: nombre,
+      descripcion: descripcion,
+      permisos: permisos,
+      activo: activo,
+    };
+
+    await db.run(INSERT.into(Rol).entries(obj));
+
+    const rolCreated = await SELECT.one
+      .from(Rol)
+      .columns("ID", "codigo", "nombre", "descripcion", "permisos", "activo")
+      .where({ codigo });
+
+    return {
+      success: true,
+      codigo: rolCreated.codigo,
+      nombre: rolCreated.username,
+      descripcion: rolCreated.descripcion,
+      activo: rolCreated.activo,
+    };
+  });
+
+  this.on("registrarUsuario", async (req) => {
+    const { username, email, password, nombre, apellido, telefono, direccion } =
+      req.data;
+
+    if (!username || !email || !password || !nombre || !apellido) {
+      return req.error(
+        400,
+        "username, email, password, nombre y apellido son requeridos",
+      );
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario } = cds.entities("ave.combatiente");
+    const emailNormalizado = email.trim().toLowerCase();
+    const usernameNormalizado = username.trim();
+
+    // Buscar usuario con su rol
+    const user = await SELECT.one
+      .from(Usuario)
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "password",
+        "nombre",
+        "apellido",
+        "rol_ID",
+      )
+      .where({ email: emailNormalizado });
+
+    if (user) {
+      return req.error(409, "El email ya está registrado");
+    }
+
+    // Hashear password
+    const bcrypt = require("bcryptjs");
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    let rolCodigo = "ADMIN",
+      rolNombre = "",
+      rol_id = "";
+    // Obtener nombre del rol
+
+    const rol = await SELECT.one
+      .from("ave.combatiente.Rol")
+      .columns("codigo", "nombre", "ID")
+      .where({ codigo: rolCodigo });
+
+    if (rol) {
+      rolCodigo = rol.codigo;
+      rolNombre = rol.nombre;
+      rol_id = rol.ID;
+    } else {
+      return req.error(
+        400,
+        "El Rol por defecto no se encuentra registrado en la tabla maestra",
+      );
+    }
+
+    // Generar token de activación
+    const tokenActivacion = crypto.randomBytes(32).toString("hex");
+    const tokenExpiracion = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 horas
+
+    // Crear usuario
+    const nuevoUsuario = {
+      ID: require("crypto").randomUUID(),
+      username: usernameNormalizado,
+      nombre: nombre,
+      apellido: apellido,
+      email: emailNormalizado,
+      password: passwordHash,
+      telefono: telefono,
+      direccion: direccion,
+      estado: "PENDIENTE",
+      tokenActivacion,
+      tokenExpiracion,
+      rol_ID: rol_id,
+    };
+
+    await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
+    // Enviar correo de activación
+    await enviarCorreoActivacion(emailNormalizado, tokenActivacion);
+
+    return {
+      success: true,
+      message:
+        "Usuario registrado correctamente. Revisa tu correo para activar tu cuenta.",
+      userId: nuevoUsuario.ID,
+      username: nuevoUsuario.username,
+      nombre: nuevoUsuario.nombre,
+      apellido: nuevoUsuario.apellido,
+      email: nuevoUsuario.email,
+      rol: rolNombre,
+      estado: nuevoUsuario.estado,
+      telefono: nuevoUsuario.telefono,
+      direccion: nuevoUsuario.direccion,
+    };
+  });
+
+  this.on("reenviarActivacion", async (req) => {
+    const { email } = req.data;
+
+    if (!email) {
+      return req.error(400, "El email es requerido");
+    }
+
+    const db = await cds.connect.to("db");
+    const { Usuario } = cds.entities("ave.combatiente");
+
+    const emailNormalizado = email.trim().toLowerCase();
+
+    const user = await db.run(
+      SELECT.one
+        .from(Usuario)
+        .columns("ID", "email", "estado", "nombre", "apellido")
+        .where({ email: emailNormalizado }),
+    );
+
+    if (!user) {
+      return req.error(404, "No existe un usuario con ese email");
+    }
+
+    if (user.estado === "ACTIVO") {
+      return req.error(400, "La cuenta ya está activada");
+    }
+
+    const nuevoTokenActivacion = crypto.randomBytes(32).toString("hex");
+    const nuevaExpiracion = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await db.run(
+      UPDATE(Usuario)
+        .set({
+          tokenActivacion: nuevoTokenActivacion,
+          tokenExpiracion: nuevaExpiracion,
+        })
+        .where({ ID: user.ID }),
+    );
+
+    await enviarCorreoActivacion(emailNormalizado, nuevoTokenActivacion);
+
+    return {
+      success: true,
+      message: "Se ha reenviado el correo de activación",
+    };
   });
 
   //==========================================
@@ -261,18 +892,22 @@ module.exports = cds.service.impl(async function () {
         "username",
         "email",
         "password",
-        "activo",
-        "nombreCompleto",
+        "estado",
+        "nombre",
+        "apellido",
         "rol_ID",
       )
-      .where({ email });
+      .where({ email: email.trim().toLowerCase() });
 
     if (!user) {
       return req.error(401, "Usuario no registrado");
     }
 
-    if (!user.activo) {
-      return req.error(401, "Usuario inactivo");
+    if (user.estado !== "ACTIVO") {
+      return req.error(
+        403,
+        "Tu cuenta aún no ha sido activada. Revisa tu correo.",
+      );
     }
 
     // Verificar password
@@ -305,9 +940,11 @@ module.exports = cds.service.impl(async function () {
       {
         id: user.ID,
         username: user.username,
+        nombre: user.nombre,
+        apellido: user.apellido,
         email: user.email,
         rol: rolCodigo,
-        nombre: user.nombreCompleto,
+        activo: user.activo,
       },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES },
@@ -316,13 +953,12 @@ module.exports = cds.service.impl(async function () {
     return {
       success: true,
       token,
-      user: {
-        username: user.username,
-        nombre: user.nombreCompleto,
-        email: user.email,
-        rol: rolNombre,
-        userId: user.ID,
-      },
+      username: user.username,
+      nombre: user.nombre,
+      apellido: user.apellido,
+      email: user.email,
+      rol: rolNombre,
+      userId: user.ID,
     };
   });
 
@@ -333,6 +969,374 @@ module.exports = cds.service.impl(async function () {
       message: "Sesión cerrada exitosamente",
     };
   });
+  async function obtenerUsuarioPerfil(usuarioId) {
+    const user = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "nombre",
+        "apellido",
+        "telefono",
+        "direccion",
+        "estado",
+        "rol_ID",
+      )
+      .where({ ID: usuarioId });
+
+    if (!user) return null;
+
+    let rolNombre = "";
+    if (user.rol_ID) {
+      const rol = await SELECT.one
+        .from("ave.combatiente.Rol")
+        .columns("nombre")
+        .where({ ID: user.rol_ID });
+      rolNombre = rol?.nombre || "";
+    }
+
+    return {
+      success: true,
+      userId: user.ID,
+      username: user.username,
+      nombre: user.nombre,
+      apellido: user.apellido,
+      email: user.email,
+      telefono: user.telefono,
+      direccion: user.direccion,
+      rol: rolNombre,
+      estado: user.estado,
+    };
+  }
+
+  this.on("obtenerPerfil", async (req) => {
+    const perfil = await obtenerUsuarioPerfil(req.jwtUser?.id);
+    if (!perfil) return req.reject(404, "Usuario no encontrado");
+    return perfil;
+  });
+
+  this.on("actualizarPerfil", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    const { username, email, nombre, apellido, telefono, direccion } = req.data;
+
+    if (!email || !nombre || !apellido) {
+      return req.reject(400, "Email, nombre y apellido son requeridos");
+    }
+
+    const emailNormalizado = String(email).trim().toLowerCase();
+    const usuarioDuplicado = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns("ID")
+      .where({ email: emailNormalizado, ID: { "!=": usuarioId } });
+
+    if (usuarioDuplicado) {
+      return req.reject(409, "El email ya esta registrado por otro usuario");
+    }
+
+    await UPDATE("ave.combatiente.Usuario")
+      .set({
+        username: String(username || "").trim() || emailNormalizado,
+        email: emailNormalizado,
+        nombre: String(nombre || "").trim(),
+        apellido: String(apellido || "").trim(),
+        telefono: telefono ? String(telefono).trim() : null,
+        direccion: direccion ? String(direccion).trim() : null,
+      })
+      .where({ ID: usuarioId });
+
+    const perfil = await obtenerUsuarioPerfil(usuarioId);
+    return {
+      ...perfil,
+      message: "Perfil actualizado correctamente",
+    };
+  });
+
+  this.on("cambiarPassword", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    const { passwordActual, passwordNuevo } = req.data;
+
+    if (!passwordActual || !passwordNuevo) {
+      return req.reject(400, "La contrasena actual y nueva son requeridas");
+    }
+
+    if (String(passwordNuevo).length < 6) {
+      return req.reject(400, "La nueva contrasena debe tener al menos 6 caracteres");
+    }
+
+    const user = await SELECT.one
+      .from("ave.combatiente.Usuario")
+      .columns("ID", "password")
+      .where({ ID: usuarioId });
+
+    if (!user) return req.reject(404, "Usuario no encontrado");
+
+    const passwordValido = await bcrypt.compare(passwordActual, user.password);
+    if (!passwordValido) {
+      return req.reject(400, "La contrasena actual no es correcta");
+    }
+
+    const passwordHash = await bcrypt.hash(passwordNuevo, 10);
+    await UPDATE("ave.combatiente.Usuario")
+      .set({ password: passwordHash })
+      .where({ ID: usuarioId });
+
+    return {
+      success: true,
+      message: "Contrasena actualizada correctamente",
+    };
+  });
+
+  async function construirResumenSuscripcion(usuarioId) {
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+
+    if (!suscripcion) {
+      return {
+        tieneSuscripcion: false,
+        ID: null,
+        plan: "",
+        estado: "",
+        fechaInicio: null,
+        fechaFin: null,
+        diasRestantes: 0,
+        maxAves: 0,
+        maxPollitos: 0,
+        maxIncubaciones: 0,
+        precioMensual: 0,
+        moneda: "PEN",
+        totalAves: 0,
+        totalPollitos: 0,
+        totalIncubaciones: 0,
+        porcentajeUsoAves: 0,
+        mensaje: "Aun no tienes una suscripcion activa.",
+      };
+    }
+
+    const diasRestantes = Math.max(calcularDiasRestantes(suscripcion.fechaFin), 0);
+    const [totalAvesRes] = await SELECT.from(Aves)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+        etapaVida: { "!=": "POLLITO" },
+      })
+      .columns("count(*) as total");
+    const [totalPollitosRes] = await SELECT.from(Crias)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      })
+      .columns("count(*) as total");
+    const [totalIncubacionesRes] = await SELECT.from(Incubaciones)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      })
+      .columns("count(*) as total");
+
+    const totalAves = Number(totalAvesRes?.total || 0);
+    const maxAves = Number(suscripcion.maxAves || 0);
+    const porcentajeUsoAves = maxAves > 0
+      ? Number(((totalAves / maxAves) * 100).toFixed(2))
+      : 0;
+
+    return {
+      tieneSuscripcion: true,
+      ID: suscripcion.ID,
+      plan: suscripcion.plan,
+      estado: suscripcion.estado,
+      fechaInicio: suscripcion.fechaInicio,
+      fechaFin: suscripcion.fechaFin,
+      diasRestantes,
+      maxAves: suscripcion.maxAves,
+      maxPollitos: suscripcion.maxPollitos,
+      maxIncubaciones: suscripcion.maxIncubaciones,
+      precioMensual: suscripcion.precioMensual,
+      moneda: suscripcion.moneda,
+      totalAves,
+      totalPollitos: Number(totalPollitosRes?.total || 0),
+      totalIncubaciones: Number(totalIncubacionesRes?.total || 0),
+      porcentajeUsoAves,
+      mensaje: diasRestantes > 0 && suscripcion.estado === "CANCELADA"
+        ? `Tu suscripcion fue cancelada, pero puedes usarla hasta el ${suscripcion.fechaFin}.`
+        : diasRestantes > 0
+          ? `Tu plan ${suscripcion.plan} vence en ${diasRestantes} dias.`
+          : "Tu suscripcion esta vencida.",
+    };
+  }
+
+  this.on("obtenerSuscripcionActual", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+    return construirResumenSuscripcion(usuarioId);
+  });
+
+  this.on("activarSuscripcion", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const plan = String(req.data.plan || "").trim().toUpperCase();
+
+    if (!PLANES_SUSCRIPCION[plan]) {
+      return req.reject(400, "Debe seleccionar un plan valido: PRUEBA, BASICO, PRO o PREMIUM.");
+    }
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    if (plan === "PRUEBA" && actual) {
+      return req.reject(400, "El plan de prueba solo se activa automaticamente para usuarios nuevos.");
+    }
+
+    const inicio = new Date();
+    const config = PLANES_SUSCRIPCION[plan];
+    const fin = sumarDias(inicio, plan === "PRUEBA" ? config.dias : 30);
+    const datosSuscripcion = {
+      ...construirDatosSuscripcion(plan, "ACTIVA", inicio),
+      fechaFin: fechaISO(fin),
+      proveedorPago: plan === "PRUEBA" ? null : "MANUAL",
+      observaciones: plan === "PRUEBA" ? "Plan de prueba premium activado por 60 dias" : `Plan ${plan} activado por 30 dias`,
+    };
+
+    if (actual) {
+      await UPDATE(Suscripciones)
+        .set(datosSuscripcion)
+        .where({ ID: actual.ID });
+    } else {
+      await INSERT.into(Suscripciones).entries({
+        ID: crypto.randomUUID(),
+        usuario_ID: usuarioId,
+        ...datosSuscripcion,
+      });
+    }
+
+    return {
+      success: true,
+      message: `Suscripcion ${plan} activada correctamente.`,
+    };
+  });
+
+  this.on("crearCheckoutMercadoPago", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    if (!accessToken) {
+      return req.reject(500, "Falta configurar MERCADOPAGO_ACCESS_TOKEN en el backend.");
+    }
+
+    const planData = getPlanConfig(req.data.plan);
+    if (!planData || planData.plan === "PRUEBA") {
+      return req.reject(400, "Debe seleccionar un plan pagado valido: BASICO, PRO o PREMIUM.");
+    }
+
+    const usuario = await SELECT.one
+      .from(Usuario)
+      .columns("ID", "email", "nombre", "apellido")
+      .where({ ID: usuarioId });
+
+    if (!usuario?.email) {
+      return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
+    }
+
+    const { plan, config } = planData;
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+    const externalReference = `aves:${usuarioId}:${plan}:${crypto.randomUUID()}`;
+    const payload = {
+      reason: `Aves Combatientes - Plan ${plan}`,
+      external_reference: externalReference,
+      payer_email: usuario.email,
+      back_url: `${frontendUrl}#/suscripcion`,
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: "months",
+        transaction_amount: Number(config.precioMensual),
+        currency_id: "PEN",
+      },
+      status: "pending",
+    };
+
+    const response = await fetch("https://api.mercadopago.com/preapproval", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Mercado Pago create preapproval error:", data);
+      return req.reject(502, data?.message || "Mercado Pago no pudo crear el checkout.");
+    }
+
+    const datosSuscripcion = {
+      ...construirDatosSuscripcion(plan, "PENDIENTE"),
+      proveedorPago: "MERCADO_PAGO",
+      mercadoPagoPreapprovalId: data.id,
+      mercadoPagoExternalReference: externalReference,
+      mercadoPagoStatus: data.status || "pending",
+      mercadoPagoInitPoint: data.init_point,
+      mercadoPagoSandboxInitPoint: data.sandbox_init_point,
+      observaciones: `Checkout Mercado Pago creado para plan ${plan}`,
+    };
+
+    if (actual) {
+      await UPDATE(Suscripciones)
+        .set(datosSuscripcion)
+        .where({ ID: actual.ID });
+    } else {
+      await INSERT.into(Suscripciones).entries({
+        ID: crypto.randomUUID(),
+        usuario_ID: usuarioId,
+        ...datosSuscripcion,
+      });
+    }
+
+    return {
+      success: true,
+      message: "Checkout de Mercado Pago creado correctamente.",
+      initPoint: data.init_point,
+      sandboxInitPoint: data.sandbox_init_point,
+      preapprovalId: data.id,
+    };
+  });
+
+  this.on("cancelarSuscripcion", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    if (!actual) return req.reject(404, "No hay una suscripcion para cancelar.");
+
+    if (actual.proveedorPago === "MERCADO_PAGO" && actual.mercadoPagoPreapprovalId && process.env.MERCADOPAGO_ACCESS_TOKEN) {
+      try {
+        await fetch(`https://api.mercadopago.com/preapproval/${actual.mercadoPagoPreapprovalId}`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status: "cancelled" }),
+        });
+      } catch (error) {
+        console.error("No se pudo cancelar en Mercado Pago:", error);
+      }
+    }
+
+    await UPDATE(Suscripciones)
+      .set({
+        estado: "CANCELADA",
+        mercadoPagoStatus: actual.proveedorPago === "MERCADO_PAGO" ? "cancelled" : actual.mercadoPagoStatus,
+        observaciones: "Suscripcion cancelada por el usuario",
+      })
+      .where({ ID: actual.ID });
+
+    return {
+      success: true,
+      message: "Suscripcion cancelada correctamente.",
+    };
+  });
+
   //==========================================
   // USUARIOS - Hash password
   //==========================================
@@ -353,9 +1357,486 @@ module.exports = cds.service.impl(async function () {
     });
   });
 
+  this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Suscripciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", ComposicionesLineaAve, (req) => agregarFiltroUsuario(req));
+  this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
+  this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
+  this.before("READ", LineasAvesActivas, (req) => agregarFiltroUsuario(req));
+
+  function normalizarCria(data) {
+    data.cintillo = String(data.cintillo || "").trim().toUpperCase();
+    data.colorCintillo = String(data.colorCintillo || "").trim().toUpperCase();
+    data.temporada = Number(data.temporada || new Date().getFullYear());
+    data.estado = data.estado || "ACTIVA";
+  }
+
+  async function validarCria(req, data, criaIdExcluir) {
+    normalizarCria(data);
+
+    if (!data.cintillo) return req.reject(400, "El cintillo es requerido");
+    if (!data.colorCintillo) return req.reject(400, "El color de cintillo es requerido");
+    if (!data.temporada || data.temporada < 2000 || data.temporada > 2100) {
+      return req.reject(400, "La temporada debe ser un anio valido");
+    }
+    if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
+      return req.reject(400, "El padre y la madre no pueden ser la misma ave");
+    }
+
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const existentes = await SELECT.from(Crias)
+      .columns("ID")
+      .where({
+        usuario_ID: usuarioId,
+        cintillo: data.cintillo,
+        colorCintillo: data.colorCintillo,
+        temporada: data.temporada,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    const duplicado = existentes.find((cria) => !criaIdExcluir || cria.ID !== criaIdExcluir);
+    if (duplicado) {
+      return req.reject(409, `Ya existe una cria con cintillo ${data.cintillo}, color ${data.colorCintillo} y temporada ${data.temporada}`);
+    }
+  }
+
+  async function obtenerComposicionBaseAve(aveId) {
+    if (!aveId) return [];
+
+    const composicion = await SELECT
+      .from(ComposicionesLineaAve)
+      .columns("linea_ID", "porcentaje")
+      .where({ ave_ID: aveId });
+
+    if (composicion.length) {
+      return composicion
+        .filter((item) => item.linea_ID && Number(item.porcentaje) > 0)
+        .map((item) => ({
+          linea_ID: item.linea_ID,
+          porcentaje: Number(item.porcentaje),
+        }));
+    }
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("ID", "linea_ID")
+      .where({ ID: aveId });
+
+    return ave?.linea_ID
+      ? [{ linea_ID: ave.linea_ID, porcentaje: 100 }]
+      : [];
+  }
+
+  function acumularComposicionLinea(mapa, composicion, factor) {
+    for (const item of composicion) {
+      const lineaId = item.linea_ID;
+      const porcentaje = Number(item.porcentaje || 0) * factor;
+      if (!lineaId || porcentaje <= 0) continue;
+
+      mapa.set(lineaId, Number((Number(mapa.get(lineaId) || 0) + porcentaje).toFixed(6)));
+    }
+  }
+
+  function normalizarComposicionLinea(mapa) {
+    const items = Array.from(mapa.entries())
+      .map(([linea_ID, porcentaje]) => ({
+        linea_ID,
+        porcentaje: Number(porcentaje),
+      }))
+      .filter((item) => item.linea_ID && item.porcentaje > 0);
+
+    const total = items.reduce((sum, item) => sum + item.porcentaje, 0);
+    if (total <= 0) return [];
+
+    const normalizados = items.map((item) => ({
+      linea_ID: item.linea_ID,
+      porcentaje: Number(item.porcentaje.toFixed(2)),
+    }));
+
+    const suma = normalizados.reduce((sum, item) => sum + item.porcentaje, 0);
+    const diferencia = Number((100 - suma).toFixed(2));
+    if (normalizados.length && suma > 99.9 && suma < 100.1 && diferencia !== 0) {
+      normalizados.sort((a, b) => b.porcentaje - a.porcentaje);
+      normalizados[0].porcentaje = Number((normalizados[0].porcentaje + diferencia).toFixed(2));
+    }
+
+    return normalizados.sort((a, b) => b.porcentaje - a.porcentaje);
+  }
+
+  async function recalcularComposicionLineaAve(aveId) {
+    if (!aveId) return;
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("ID", "linea_ID", "padre_ID", "madre_ID", "usuario_ID")
+      .where({ ID: aveId });
+
+    if (!ave) return;
+
+    const mapa = new Map();
+    const composicionPadre = await obtenerComposicionBaseAve(ave.padre_ID);
+    const composicionMadre = await obtenerComposicionBaseAve(ave.madre_ID);
+
+    if (composicionPadre.length || composicionMadre.length) {
+      if (composicionPadre.length) acumularComposicionLinea(mapa, composicionPadre, 0.5);
+      if (composicionMadre.length) acumularComposicionLinea(mapa, composicionMadre, 0.5);
+    } else if (ave.linea_ID) {
+      mapa.set(ave.linea_ID, 100);
+    }
+
+    const composicion = normalizarComposicionLinea(mapa);
+
+    await DELETE.from(ComposicionesLineaAve).where({ ave_ID: aveId });
+
+    if (!composicion.length) return;
+
+    await INSERT.into(ComposicionesLineaAve).entries(
+      composicion.map((item) => ({
+        ID: crypto.randomUUID(),
+        ave_ID: aveId,
+        linea_ID: item.linea_ID,
+        porcentaje: item.porcentaje,
+        usuario_ID: ave.usuario_ID,
+      })),
+    );
+  }
+
+  async function obtenerPorcentajeAveEnLinea(aveId, lineaId) {
+    if (!aveId || !lineaId) return 0;
+
+    await recalcularComposicionLineaAve(aveId);
+
+    const composicion = await SELECT.one
+      .from(ComposicionesLineaAve)
+      .columns("porcentaje")
+      .where({ ave_ID: aveId, linea_ID: lineaId });
+
+    if (composicion) {
+      return Number(composicion.porcentaje || 0);
+    }
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("linea_ID")
+      .where({ ID: aveId });
+
+    return ave?.linea_ID === lineaId ? 100 : 0;
+  }
+
+  async function obtenerLineaCruceAbierto(usuarioId) {
+    if (!usuarioId) return null;
+
+    const existente = await SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        usuario_ID: usuarioId,
+        nombre: LINEA_CRUCE_ABIERTO_NOMBRE,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    if (existente) return existente;
+
+    const lineaId = crypto.randomUUID();
+    await INSERT.into(LineasAves).entries({
+      ID: lineaId,
+      nombre: LINEA_CRUCE_ABIERTO_NOMBRE,
+      descripcion: "Linea tecnica para registrar cruces sin linaje asociado.",
+      objetivo: "Registrar cruces abiertos.",
+      generacionActual: 0,
+      estadoMejora: "OBSERVACION",
+      estado: "ACTIVA",
+      usuario_ID: usuarioId,
+    });
+
+    return { ID: lineaId, nombre: LINEA_CRUCE_ABIERTO_NOMBRE };
+  }
+
+  async function esLineaCruceAbierto(lineaId, usuarioId) {
+    if (!lineaId) return false;
+
+    const linea = await SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        ID: lineaId,
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    return linea?.nombre === LINEA_CRUCE_ABIERTO_NOMBRE;
+  }
+
+  async function obtenerLineaPorId(lineaId, usuarioId) {
+    if (!lineaId) return null;
+
+    return SELECT.one
+      .from(LineasAves)
+      .columns("ID", "nombre")
+      .where({
+        ID: lineaId,
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+      });
+  }
+
+  async function obtenerCandidatasLineaPorPadres(machoId, hembraId, usuarioId) {
+    await Promise.all([
+      recalcularComposicionLineaAve(machoId),
+      recalcularComposicionLineaAve(hembraId),
+    ]);
+
+    const [composicionMacho, composicionHembra] = await Promise.all([
+      SELECT.from(ComposicionesLineaAve)
+        .columns("linea_ID", "porcentaje")
+        .where({ ave_ID: machoId }),
+      SELECT.from(ComposicionesLineaAve)
+        .columns("linea_ID", "porcentaje")
+        .where({ ave_ID: hembraId }),
+    ]);
+
+    const lineas = new Map();
+    const acumular = (items) => {
+      for (const item of items || []) {
+        const lineaId = item.linea_ID;
+        const porcentaje = Number(item.porcentaje || 0);
+        if (!lineaId || porcentaje <= 0) continue;
+
+        lineas.set(lineaId, Number((Number(lineas.get(lineaId) || 0) + porcentaje).toFixed(2)));
+      }
+    };
+
+    acumular(composicionMacho);
+    acumular(composicionHembra);
+
+    const candidatas = [];
+    for (const [lineaId, porcentajeTotal] of lineas.entries()) {
+      const linea = await obtenerLineaPorId(lineaId, usuarioId);
+      if (!linea || linea.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) continue;
+      candidatas.push({ ...linea, porcentajeTotal });
+    }
+
+    return candidatas.sort((a, b) => {
+      if (b.porcentajeTotal !== a.porcentajeTotal) {
+        return b.porcentajeTotal - a.porcentajeTotal;
+      }
+
+      return String(a.nombre || "").localeCompare(String(b.nombre || ""));
+    });
+  }
+
+  async function determinarLineaPlanCruce(req, data, usuarioId) {
+    const lineaSolicitada = await obtenerLineaPorId(data.linea_ID, usuarioId);
+    if (!lineaSolicitada) {
+      return req.reject(400, "La linea seleccionada no existe o no pertenece al usuario.");
+    }
+
+    if (lineaSolicitada.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) {
+      return { linea: lineaSolicitada, cruceAbierto: true };
+    }
+
+    const candidatas = await obtenerCandidatasLineaPorPadres(data.macho_ID, data.hembra_ID, usuarioId);
+    const candidataSolicitada = candidatas.find((linea) => linea.ID === lineaSolicitada.ID);
+
+    if (candidataSolicitada) {
+      return { linea: candidataSolicitada, cruceAbierto: false };
+    }
+
+    return req.reject(
+      400,
+      `Al menos uno de los reproductores debe tener algun porcentaje de sangre de ${lineaSolicitada.nombre} para crear este plan de cruce.`,
+    );
+  }
+
+  function asegurarPrefijoCodigoPlan(codigo, cruceAbierto) {
+    const prefijo = cruceAbierto ? "PCA" : "PC";
+    if (!codigo) {
+      const fecha = new Date();
+      const yyyyMMdd = fecha.toISOString().slice(0, 10).replace(/-/g, "");
+      const hhmmss = fecha.toTimeString().slice(0, 8).replace(/:/g, "");
+      return `${prefijo}-${yyyyMMdd}-${hhmmss}`;
+    }
+
+    return String(codigo).replace(/^(PCA|PC)([_-])/, `${prefijo}$2`);
+  }
+
+  async function validarPlanCruce(req, data, planIdExcluir = null) {
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+
+    if (!data.linea_ID || !data.macho_ID || !data.hembra_ID) {
+      return req.reject(400, "Debe seleccionar linea, macho y hembra para crear el plan de cruce.");
+    }
+
+    if (data.macho_ID === data.hembra_ID) {
+      return req.reject(400, "El macho y la hembra no pueden ser el mismo ejemplar.");
+    }
+
+    const { linea, cruceAbierto } = await determinarLineaPlanCruce(req, data, usuarioId);
+    data.linea_ID = linea.ID;
+
+    const duplicados = await SELECT
+      .from(PlanesCruces)
+      .columns("ID", "codigo")
+      .where({
+        usuario_ID: usuarioId,
+        macho_ID: data.macho_ID,
+        hembra_ID: data.hembra_ID,
+        estado: { "!=": "ELIMINADO" },
+      });
+    const planDuplicado = duplicados.find((plan) => !planIdExcluir || plan.ID !== planIdExcluir);
+
+    if (planDuplicado) {
+      return req.reject(
+        409,
+        `Ya existe un plan de cruce activo con los mismos padres: ${planDuplicado.codigo || planDuplicado.ID}.`,
+      );
+    }
+
+    return { cruceAbierto, usuarioId, linea };
+  }
+
+  this.before("CREATE", Crias, async (req) => {
+    await validarCria(req, req.data);
+  });
+
+  this.before("UPDATE", Crias, async (req) => {
+    const criaId = req.params?.[0]?.ID;
+    const actual = criaId ? await SELECT.one.from(Crias).where({ ID: criaId }) : null;
+    const dataCompleta = { ...(actual || {}), ...req.data };
+
+    await validarCria(req, dataCompleta, criaId);
+
+    req.data.cintillo = dataCompleta.cintillo;
+    req.data.colorCintillo = dataCompleta.colorCintillo;
+    req.data.temporada = dataCompleta.temporada;
+  });
+
+  this.on("eliminarCria", async (req) => {
+    const criaId = req.data.criaId;
+    if (!criaId) return req.reject(400, "El ID de la cria es obligatorio");
+
+    const cria = await SELECT.one.from(Crias).where({ ID: criaId });
+    if (!cria) return req.reject(404, "Cria no encontrada");
+
+    await UPDATE(Crias).set({ estado: "ELIMINADO" }).where({ ID: criaId });
+    return { success: true, message: "Cria eliminada correctamente" };
+  });
+
+  this.on("registrarCriaComoAve", async (req) => {
+    const criaId = req.data.criaId;
+    const placa = String(req.data.placa || "").trim().toUpperCase();
+    const genero = String(req.data.genero || "").trim().toUpperCase();
+    if (!criaId) return req.reject(400, "El ID de la cria es obligatorio");
+    if (!placa) return req.reject(400, "La placa del ave adulta es obligatoria");
+    if (!genero) return req.reject(400, "El género del ave adulta es obligatorio");
+
+    const cria = await SELECT.one.from(Crias).where({ ID: criaId });
+    if (!cria) return req.reject(404, "Cria no encontrada");
+    if (cria.estado === "REGISTRADA_ADULTA" && cria.aveGenerada_ID) {
+      return req.reject(409, "Esta cria ya fue registrada como ave adulta");
+    }
+
+    const existePlaca = await SELECT.one.from(Aves).where({ placa });
+    if (existePlaca) {
+      return req.reject(409, `Ya existe un ave con la placa ${placa}`);
+    }
+
+    const aveId = crypto.randomUUID();
+    const ave = {
+      ID: aveId,
+      placa,
+      nombre: cria.nombre || null,
+      sexo: genero,
+      fechaNacimiento: cria.fechaNacimiento,
+      color: cria.color || null,
+      ubicacion: cria.ubicacion || null,
+      observaciones: cria.observaciones || null,
+      estado: "ACTIVO",
+      categoria: "BUENO",
+      etapaVida: "ADULTO",
+      cria: true,
+      padrote: false,
+      aptoReproduccion: true,
+      usuario_ID: cria.usuario_ID,
+      padre_ID: cria.padre_ID || null,
+      madre_ID: cria.madre_ID || null,
+    };
+
+    await INSERT.into(Aves).entries(ave);
+    await recalcularComposicionLineaAve(aveId);
+    const aveCreada = await SELECT.one.from(Aves).where({ ID: aveId });
+
+    await UPDATE(Crias)
+      .set({
+        estado: "REGISTRADA_ADULTA",
+        aveGenerada_ID: aveCreada.ID,
+      })
+      .where({ ID: criaId });
+
+    return aveCreada;
+  });
+
+  function generarPlacaPollito(data) {
+    const base = `${data.temporada}-${data.colorCintillo}-${data.cintillo}`.toUpperCase();
+    return base.length <= 16
+      ? `CIN-${base}`
+      : `CIN-${crypto.createHash("sha1").update(base).digest("hex").slice(0, 16)}`;
+  }
+
+  async function validarIdentificacionPollito(req, data, aveIdExcluir) {
+    const esPollito = data.etapaVida === "POLLITO" || !!data.cintillo || !!data.colorCintillo || !!data.temporada;
+    if (!esPollito) return;
+
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const cintillo = String(data.cintillo || "").trim().toUpperCase();
+    const colorCintillo = String(data.colorCintillo || "").trim().toUpperCase();
+    const temporada = Number(data.temporada || new Date().getFullYear());
+
+    if (!cintillo) return req.reject(400, "El cintillo es requerido para registrar un pollito");
+    if (!colorCintillo) return req.reject(400, "El color de cintillo es requerido para registrar un pollito");
+    if (!temporada || temporada < 2000 || temporada > 2100) {
+      return req.reject(400, "La temporada debe ser un anio valido");
+    }
+
+    const existentes = await SELECT.from(Aves)
+      .columns("ID")
+      .where({
+        usuario_ID: usuarioId,
+        cintillo,
+        colorCintillo,
+        temporada,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    const duplicado = existentes.find((ave) => !aveIdExcluir || ave.ID !== aveIdExcluir);
+    if (duplicado) {
+      return req.reject(409, `Ya existe un pollito con cintillo ${cintillo}, color ${colorCintillo} y temporada ${temporada}`);
+    }
+
+    data.cintillo = cintillo;
+    data.colorCintillo = colorCintillo;
+    data.temporada = temporada;
+    data.etapaVida = "POLLITO";
+    data.cria = true;
+    data.padrote = false;
+    data.aptoReproduccion = false;
+    data.estado = data.estado || "ACTIVO";
+    data.categoria = data.categoria || "BUENO";
+    data.tipoAve = data.tipoAve || "Pollito";
+    data.placa = data.placa || generarPlacaPollito(data);
+  }
+
   // Validar datos de ave antes de crear
   this.before("CREATE", "Aves", async (req) => {
-    const { placa, fechaNacimiento, padre, madre } = req.data;
+    const { fechaNacimiento, padre, madre } = req.data;
+
+    await validarIdentificacionPollito(req, req.data);
+    const { placa } = req.data;
+
+    if (!placa) {
+      return req.error(400, "La placa es requerida");
+    }
 
     // Validar placa única
     const existePlaca = await SELECT.one.from(Aves).where({ placa });
@@ -381,6 +1862,489 @@ module.exports = cds.service.impl(async function () {
         (hoy - nacimiento) / (365.25 * 24 * 60 * 60 * 1000),
       );
     }
+  });
+
+  this.before("UPDATE", "Aves", async (req) => {
+    const aveId = req.params?.[0]?.ID;
+    const actual = aveId ? await SELECT.one.from(Aves).where({ ID: aveId }) : null;
+    const dataCompleta = { ...(actual || {}), ...req.data };
+
+    await validarIdentificacionPollito(req, dataCompleta, aveId);
+
+    if (dataCompleta.etapaVida === "POLLITO") {
+      req.data.cintillo = dataCompleta.cintillo;
+      req.data.colorCintillo = dataCompleta.colorCintillo;
+      req.data.temporada = dataCompleta.temporada;
+      req.data.etapaVida = "POLLITO";
+      req.data.cria = true;
+      req.data.padrote = false;
+      req.data.aptoReproduccion = false;
+      req.data.placa = dataCompleta.placa || generarPlacaPollito(dataCompleta);
+    }
+  });
+
+  this.after("UPDATE", "Aves", async (data, req) => {
+    const aveId = req.params?.[0]?.ID || data?.ID;
+    await recalcularComposicionLineaAve(aveId);
+  });
+
+  function validarNumeros(data) {
+    const totalHuevos = Number(data.totalHuevos || 0);
+    const fertiles = Number(data.huevosFertiles || 0);
+    const nacidos = Number(data.huevosEclosionados || 0);
+    const noEclosionados = Number(data.huevosNoEclosionados || 0);
+
+    if (totalHuevos < 0 || fertiles < 0 || nacidos < 0 || noEclosionados < 0) {
+      req.reject(400, 'Los valores numéricos no pueden ser negativos');
+    }
+
+    if (fertiles > totalHuevos) {
+      throw new Error('La cantidad de fértiles no puede ser mayor al total de huevos');
+    }
+
+    if (nacidos > fertiles) {
+      throw new Error('La cantidad de nacidos no puede ser mayor a los fértiles');
+    }
+
+    if ((nacidos + noEclosionados) > fertiles) {
+      throw new Error('Nacidos + No eclosionados no puede ser mayor a fértiles');
+    }
+  }
+
+  async function completarDetalleDesdePlanCruce(data) {
+    if (!data.planCruce_ID) return;
+
+    const plan = await SELECT.one.from(PlanesCruces).where({ ID: data.planCruce_ID });
+    if (!plan) {
+      throw new Error("El plan de cruce seleccionado no existe");
+    }
+
+    data.padre_ID = data.padre_ID || plan.macho_ID;
+    data.madre_ID = data.madre_ID || plan.hembra_ID;
+    data.tipoParentesco = data.tipoParentesco || plan.tipoParentesco;
+    data.nivelRiesgo = data.nivelRiesgo || plan.nivelRiesgo;
+    data.porcentaje = data.porcentaje ?? plan.porcentaje;
+  }
+
+  async function validarDetallesUnicosEnPayload(req, detalles = []) {
+    const parejas = new Set();
+
+    for (const detalle of detalles) {
+      try {
+        await completarDetalleDesdePlanCruce(detalle);
+      } catch (error) {
+        return req.reject(400, error.message);
+      }
+
+      if (!detalle.padre_ID || !detalle.madre_ID) continue;
+
+      if (detalle.padre_ID === detalle.madre_ID) {
+        return req.reject(400, "El padre y la madre no pueden ser la misma ave");
+      }
+
+      const clave = `${detalle.padre_ID}|${detalle.madre_ID}`;
+      if (parejas.has(clave)) {
+        return req.reject(409, "No se puede registrar dos filas con los mismos padres en una misma incubacion.");
+      }
+
+      parejas.add(clave);
+    }
+  }
+
+  async function validarDetalleUnicoEnIncubacion(req, data) {
+    if (!data.incubacion_ID || !data.padre_ID || !data.madre_ID) return;
+
+    const detalleId = data.ID || req.params?.[0]?.ID;
+    const usuarioId = data.usuario_ID || req.jwtUser?.id;
+    const where = {
+      incubacion_ID: data.incubacion_ID,
+      padre_ID: data.padre_ID,
+      madre_ID: data.madre_ID,
+    };
+
+    if (usuarioId) {
+      where.usuario_ID = usuarioId;
+    }
+
+    const detallesExistentes = await SELECT
+      .from(IncubacionDetalles)
+      .columns("ID")
+      .where(where);
+
+    const duplicado = detallesExistentes.some((detalle) => detalle.ID !== detalleId);
+    if (duplicado) {
+      return req.reject(409, "No se puede registrar dos filas con los mismos padres en una misma incubacion.");
+    }
+  }
+
+  this.before(['CREATE', 'UPDATE'], IncubacionDetalles, async (req) => {
+    const data = req.data;
+
+    const totalHuevos = Number(data.totalHuevos || 0);
+    const fertiles = Number(data.huevosFertiles || 0);
+    const nacidos = Number(data.huevosEclosionados || 0);
+    const noEclosionados = Number(data.huevosNoEclosionados || 0);
+
+    if (totalHuevos < 0 || fertiles < 0 || nacidos < 0 || noEclosionados < 0) {
+      return req.reject(400, 'Los valores numéricos no pueden ser negativos');
+    }
+
+    if (fertiles > totalHuevos) {
+      return req.reject(400, 'La cantidad de fértiles no puede ser mayor al total de huevos');
+    }
+
+    if (nacidos > fertiles) {
+      return req.reject(400, 'La cantidad de nacidos no puede ser mayor a los fértiles');
+    }
+
+    if ((nacidos + noEclosionados) > fertiles) {
+      return req.reject(400, 'Nacidos + No eclosionados no puede ser mayor a fértiles');
+    }
+
+    try {
+      await completarDetalleDesdePlanCruce(data);
+    } catch (error) {
+      return req.reject(400, error.message);
+    }
+
+    if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
+      return req.reject(400, 'El padre y la madre no pueden ser la misma ave');
+    }
+
+    await validarDetalleUnicoEnIncubacion(req, data);
+
+    if (data.padre_ID && data.madre_ID) {
+      try {
+        const analisis = await analizarParentescoAutomatico(data.padre_ID, data.madre_ID, 5);
+        data.tipoParentesco = analisis.tipoParentesco;
+        data.nivelRiesgo = analisis.nivelRiesgo;
+        data.porcentaje = analisis.porcentaje;
+      } catch (error) {
+        return req.reject(400, error.message);
+      }
+    }
+  });
+
+  this.before("CREATE", PlanesCruces, async (req) => {
+    const data = req.data;
+    const { cruceAbierto, linea } = await validarPlanCruce(req, data);
+    const analisis = await analizarParentescoAutomatico(data.macho_ID, data.hembra_ID, data.generacionesAnalizadas || 5, linea.ID);
+
+    req.data.linea_ID = linea.ID;
+    req.data.tipoCruce = analisis.tipoCruce;
+    req.data.tipoParentesco = req.data.tipoParentesco || analisis.tipoParentesco;
+    req.data.nivelRiesgo = req.data.nivelRiesgo || analisis.nivelRiesgo;
+    req.data.porcentaje = req.data.porcentaje ?? analisis.porcentaje;
+    req.data.ancestrosComunes = req.data.ancestrosComunes || analisis.ancestrosComunes;
+    req.data.decision = req.data.decision || analisis.decision;
+    req.data.recomendacion = req.data.recomendacion || analisis.recomendacion;
+    req.data.codigo = asegurarPrefijoCodigoPlan(req.data.codigo, cruceAbierto);
+  });
+
+  this.before("UPDATE", PlanesCruces, async (req) => {
+    const planId = req.params?.[0]?.ID || req.data?.ID;
+    if (!planId) return req.reject(400, "No se pudo identificar el plan de cruce.");
+
+    const actual = await SELECT.one.from(PlanesCruces).where({ ID: planId, usuario_ID: req.jwtUser?.id });
+    if (!actual || actual.estado === "ELIMINADO") {
+      return req.reject(404, "Plan de cruce no encontrado.");
+    }
+
+    const dataCompleta = { ...actual, ...req.data };
+    if (dataCompleta.estado === "ELIMINADO") return;
+
+    const { cruceAbierto, linea } = await validarPlanCruce(req, dataCompleta, planId);
+    const analisis = await analizarParentescoAutomatico(
+      dataCompleta.macho_ID,
+      dataCompleta.hembra_ID,
+      dataCompleta.generacionesAnalizadas || 5,
+      linea.ID,
+    );
+
+    req.data.linea_ID = linea.ID;
+    req.data.macho_ID = dataCompleta.macho_ID;
+    req.data.hembra_ID = dataCompleta.hembra_ID;
+    req.data.tipoCruce = analisis.tipoCruce;
+    req.data.tipoParentesco = req.data.tipoParentesco || dataCompleta.tipoParentesco || analisis.tipoParentesco;
+    req.data.nivelRiesgo = req.data.nivelRiesgo || dataCompleta.nivelRiesgo || analisis.nivelRiesgo;
+    req.data.porcentaje = req.data.porcentaje ?? dataCompleta.porcentaje ?? analisis.porcentaje;
+    req.data.ancestrosComunes = req.data.ancestrosComunes || dataCompleta.ancestrosComunes || analisis.ancestrosComunes;
+    req.data.decision = req.data.decision || dataCompleta.decision || analisis.decision;
+    req.data.recomendacion = req.data.recomendacion || dataCompleta.recomendacion || analisis.recomendacion;
+    req.data.codigo = asegurarPrefijoCodigoPlan(dataCompleta.codigo, cruceAbierto);
+  });
+
+  this.before(["CREATE", "UPDATE"], EvaluacionesAves, async (req) => {
+    const campos = ["vigor", "saludGeneral", "fertilidad"];
+    for (const campo of campos) {
+      if (req.data[campo] === undefined || req.data[campo] === null) continue;
+      const valor = Number(req.data[campo]);
+      if (valor < 1 || valor > 10) {
+        return req.reject(400, `${campo} debe estar entre 1 y 10`);
+      }
+    }
+
+    if (req.data.ave_ID && req.data.aptoReproduccion !== undefined) {
+      await UPDATE(Aves)
+        .set({ aptoReproduccion: req.data.aptoReproduccion })
+        .where({ ID: req.data.ave_ID });
+    }
+  });
+
+  async function obtenerAveIdEvaluacionPleito(req) {
+    if (req.data?.ave_ID) return req.data.ave_ID;
+    const evaluacionId = req.params?.[0]?.ID || req.data?.ID;
+    if (!evaluacionId) return null;
+
+    const actual = await SELECT.one
+      .from(EvaluacionesPleito)
+      .columns("ave_ID")
+      .where({ ID: evaluacionId });
+
+    return actual?.ave_ID || null;
+  }
+
+  async function sincronizarCalificacionPleito(aveId) {
+    if (!aveId) return;
+
+    const [ultima] = await SELECT.from(EvaluacionesPleito)
+      .where({ ave_ID: aveId })
+      .orderBy("fecha desc", "modifiedAt desc", "createdAt desc")
+      .limit(1);
+
+    await UPDATE(Aves)
+      .set({ categoria: ultima?.calificacion || null })
+      .where({ ID: aveId });
+  }
+
+  this.before(["CREATE", "UPDATE", "DELETE"], EvaluacionesPleito, async (req) => {
+    req._evaluacionPleitoAveId = await obtenerAveIdEvaluacionPleito(req);
+
+    if (req.event === "DELETE") return;
+
+    const calificaciones = ["PESIMO", "REGULAR", "BUENO", "EXCELENTE", "EXTRAORDINARIO"];
+    if (req.data.calificacion && !calificaciones.includes(req.data.calificacion)) {
+      return req.reject(400, "La calificacion de pleito no es valida.");
+    }
+
+    const campos = ["bravura", "tecnica", "resistencia", "condicionFisica"];
+    for (const campo of campos) {
+      if (req.data[campo] === undefined || req.data[campo] === null) continue;
+      const valor = Number(req.data[campo]);
+      if (valor < 1 || valor > 10) {
+        return req.reject(400, `${campo} debe estar entre 1 y 10`);
+      }
+    }
+
+    if (req.event === "CREATE" && req.jwtUser?.id && !req.data.usuario_ID) {
+      req.data.usuario_ID = req.jwtUser.id;
+    }
+  });
+
+  this.after(["CREATE", "UPDATE", "DELETE"], EvaluacionesPleito, async (data, req) => {
+    const aveId = data?.ave_ID || req.data?.ave_ID || req._evaluacionPleitoAveId;
+    await sincronizarCalificacionPleito(aveId);
+  });
+
+  async function validarLimiteArchivosAve(req, tipoArchivo) {
+    const aveId = req.data?.ave_ID;
+    if (!aveId) {
+      return req.reject(400, "Debe indicar el ave para asociar el archivo.");
+    }
+
+    const [fotos, videos] = await Promise.all([
+      SELECT.from(FotosAve).where({ ave_ID: aveId }),
+      SELECT.from(VideosAve).where({ ave_ID: aveId })
+    ]);
+
+    const totalActual = (fotos?.length || 0) + (videos?.length || 0);
+    if (totalActual >= 3) {
+      return req.reject(400, "Solo se permiten 3 archivos como maximo por ave.");
+    }
+
+    const url = req.data.urlSharepoint || req.data.thumbnailUrl;
+    if (!url) {
+      return req.reject(400, "Debe indicar la referencia del archivo.");
+    }
+
+    const nombreArchivo = normalizarNombreArchivoAve(req.data.titulo || url);
+    const existeArchivo = [...(fotos || []), ...(videos || [])]
+      .some((archivo) => normalizarNombreArchivoAve(archivo.titulo || archivo.urlSharepoint) === nombreArchivo);
+
+    if (existeArchivo) {
+      return req.reject(400, "Este archivo ya fue registrado para el ave.");
+    }
+
+    if (tipoArchivo === "imagen") {
+      req.data.titulo = req.data.titulo || "Imagen del ave";
+      req.data.fechaFoto = req.data.fechaFoto || new Date().toISOString().slice(0, 10);
+    } else {
+      req.data.titulo = req.data.titulo || "Video del ave";
+      req.data.fechaVideo = req.data.fechaVideo || new Date().toISOString().slice(0, 10);
+    }
+  }
+
+  function normalizarNombreArchivoAve(nombre) {
+    return String(nombre || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^pending-upload:\/\/aves\/[^/]+\//, "")
+      .replace(/\?.*$/, "");
+  }
+
+  this.before("CREATE", FotosAve, async (req) => validarLimiteArchivosAve(req, "imagen"));
+  this.before("CREATE", VideosAve, async (req) => validarLimiteArchivosAve(req, "video"));
+
+  this.before(['CREATE', 'UPDATE'], Incubaciones, async (req) => {
+    const data = req.data;
+
+    if (Array.isArray(data.detalles)) {
+      await validarDetallesUnicosEnPayload(req, data.detalles);
+    }
+
+    if (data.fechaIncubacion) {
+      const fechaIncubacion = new Date(data.fechaIncubacion);
+
+      if (!data.fechaPreNacimiento) {
+        const pre = new Date(fechaIncubacion);
+        pre.setDate(pre.getDate() + 18);
+        data.fechaPreNacimiento = pre.toISOString();
+      }
+
+      if (!data.fechaEclosion) {
+        const eco = new Date(fechaIncubacion);
+        eco.setDate(eco.getDate() + 21);
+        data.fechaEclosion = eco.toISOString();
+      }
+    }
+  });
+
+  this.on("iniciar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado !== "PROGRAMADA") {
+      return req.error(
+        400,
+        "Solo se puede iniciar una incubación en estado PROGRAMADA",
+      );
+    }
+
+    // VALIDACIÓN CLAVE
+    const ahora = new Date();
+    const fechaIncubacion = new Date(incubacion.fechaIncubacion);
+
+    if (fechaIncubacion > ahora) {
+      return req.error(
+        400,
+        "No se puede iniciar la incubación porque la fecha de incubación es mayor a la fecha actual"
+      );
+    }
+
+    await db.run(
+      UPDATE(Incubacion).set({ estado: "EN_PROCESO" }).where({ ID: id }),
+    );
+
+    return "Incubación iniciada correctamente";
+  });
+
+  this.on("finalizar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion, IncubacionDetalle } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+    const { observacion } = req.data;
+
+    if (!id) {
+      return req.error(400, "ID de incubación requerido");
+    }
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id })
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado !== "EN_PROCESO") {
+      return req.error(
+        400,
+        "Solo se puede finalizar una incubación en estado EN_PROCESO"
+      );
+    }
+
+    // VALIDACIÓN CLAVE
+    const ahora = new Date();
+    const fechaEclosion = new Date(incubacion.fechaEclosion);
+
+    if (fechaEclosion > ahora) {
+      return req.error(
+        400,
+        "No se puede finalizar la incubación porque la fecha de eclosión es mayor a la fecha actual"
+      );
+    }
+
+    const detalles = await db.run(
+      SELECT.from(IncubacionDetalle).where({ incubacion_ID: id })
+    );
+
+    if (!detalles || detalles.length === 0) {
+      return req.error(400, "La incubación no tiene detalles");
+    }
+
+    await db.run(
+      UPDATE(Incubacion)
+        .set({
+          observaciones: observacion,
+          estado: "COMPLETADA",
+          fechaFinIncubacion: new Date().toISOString()
+        })
+        .where({ ID: id })
+    );
+
+    return "Incubación finalizada correctamente";
+  });
+
+  this.on("cancelar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+    const { observacion } = req.data;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado === "COMPLETADA") {
+      return req.error(400, "No se puede cancelar una incubación finalizada");
+    }
+
+    await db.run(
+      UPDATE(Incubacion)
+        .set({
+          estado: "CANCELADA",
+          motivoCancelacion: observacion,
+        })
+        .where({ ID: id }),
+    );
+
+    return "Incubación cancelada correctamente";
   });
 
   // Validar pesaje
@@ -413,30 +2377,502 @@ module.exports = cds.service.impl(async function () {
 
   // Validar pelea
   this.before("CREATE", "Peleas", async (req) => {
-    const { fecha, ave } = req.data;
+    const aveId = req.data.ave_ID || req.data.ave?.ID;
+    const combatienteBId = req.data.combatienteB_ID || req.data.combatienteB?.ID;
+    const ambosPropios = req.data.ambosPropios !== false;
+    const textoCombatienteA = String(req.data.combatienteATexto || "").trim();
+    const textoCombatienteB = String(req.data.combatienteBTexto || "").trim();
+
+    if (req.jwtUser?.id) {
+      req.data.usuario_ID = req.jwtUser.id;
+    }
+
+    if (req.jwtUser?.id && MAX_REGISTROS_COMBATES_POR_USUARIO > 0) {
+      const totalPeleas = await SELECT.one
+        .from(Peleas)
+        .where({ usuario_ID: req.jwtUser.id })
+        .columns("count(1) as total");
+      const totalActual = Number(totalPeleas?.total || 0);
+
+      if (totalActual >= MAX_REGISTROS_COMBATES_POR_USUARIO) {
+        return req.error(
+          403,
+          `Por ahora solo puedes registrar hasta ${MAX_REGISTROS_COMBATES_POR_USUARIO} combates. En produccion se habilitara sin limite.`,
+        );
+      }
+    }
+
+    if (!aveId && !textoCombatienteA) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
+    }
+
+    if (ambosPropios && !combatienteBId && !textoCombatienteB) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    // if (!ambosPropios && !req.data.nombreOponente) {
+    //   return req.error(400, "Debe indicar el nombre del gallo rival.");
+    // }
+
+    // if (!ambosPropios && !req.data.propietarioOponente) {
+    //   return req.error(400, "Debe indicar el propietario del gallo rival.");
+    // }
 
     // Verificar que el ave esté activa
-    const aveData = await SELECT.one.from(Aves).where({ ID: ave.ID });
+    if (aveId) {
+      const aveData = await SELECT.one.from(Aves).where({
+        ID: aveId,
+        usuario_ID: req.jwtUser?.id,
+      });
 
-    if (!aveData) {
-      req.error(404, "Ave no encontrada");
+      if (!aveData) {
+        req.error(404, "Ave no encontrada");
+      }
     }
 
-    if (aveData.estado !== "ACTIVO") {
-      req.error(400, "El ave no está activa");
-    }
+    // if (aveData.estado !== "ACTIVO") {
+    //   req.error(400, "El ave no está activa");
+    // }
 
     // Verificar que no haya peleas muy recientes (menos de 30 días)
+    if (ambosPropios && combatienteBId) {
+      if (esMismoId(combatienteBId, aveId)) {
+        req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteBId,
+        usuario_ID: req.jwtUser?.id,
+      });
+
+      if (!combatienteB) {
+        req.error(404, "Combatiente B no encontrado para el usuario actual.");
+      }
+
+      // if (combatienteB.estado !== "ACTIVO") {
+      //   req.error(400, "El Combatiente B no esta activo");
+      // }
+
+      req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else if (ambosPropios) {
+      req.data.nombreOponente = textoCombatienteB;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else {
+      req.data.combatienteB_ID = null;
+    }
+
     const hace30Dias = new Date();
     hace30Dias.setDate(hace30Dias.getDate() - 30);
 
-    const peleasRecientes = await SELECT.from(Peleas)
-      .where({ ave_ID: ave.ID })
-      .and({ fecha: { ">": hace30Dias.toISOString() } });
+    const peleasRecientes = aveId
+      ? await SELECT.from(Peleas)
+        .where({ ave_ID: aveId })
+        .and({ fecha: { ">": hace30Dias.toISOString() } })
+      : [];
 
     if (peleasRecientes.length > 0) {
       req.warn("El ave tuvo una pelea en los últimos 30 días");
     }
+  });
+
+  this.on("registrarCombate", async (req) => {
+    const {
+      ave_ID,
+      combatienteATexto,
+      combatienteB_ID,
+      combatienteBTexto,
+      ambosPropios,
+      fecha,
+      tipoCombate,
+      lugar,
+      evento,
+      nombreOponente,
+      propietarioOponente,
+      procedenciaOponente,
+      resultado,
+      metodoVictoria,
+      premioDinero,
+      lesiones,
+      observaciones,
+    } = req.data;
+    const userId = req.jwtUser?.id;
+    const esAmbosPropios = ambosPropios !== false;
+    const db = await cds.connect.to("db");
+    const textoCombatienteA = String(combatienteATexto || "").trim();
+    const textoCombatienteB = String(combatienteBTexto || "").trim();
+
+    if (userId && MAX_REGISTROS_COMBATES_POR_USUARIO > 0) {
+      const totalPeleas = await SELECT.one
+        .from(Peleas)
+        .where({ usuario_ID: userId })
+        .columns("count(1) as total");
+      const totalActual = Number(totalPeleas?.total || 0);
+
+      if (totalActual >= MAX_REGISTROS_COMBATES_POR_USUARIO) {
+        return req.error(
+          403,
+          `Por ahora solo puedes registrar hasta ${MAX_REGISTROS_COMBATES_POR_USUARIO} combates. En produccion se habilitara sin limite.`,
+        );
+      }
+    }
+
+    if (!ave_ID && !textoCombatienteA) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
+    }
+
+    if (!fecha || !tipoCombate) {
+      return req.error(400, "Debe indicar fecha y tipo de combate.");
+    }
+
+    if (esAmbosPropios && !combatienteB_ID && !textoCombatienteB) {
+      return req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    if (!esAmbosPropios && !nombreOponente) {
+      return req.error(400, "Debe indicar el nombre del gallo rival.");
+    }
+
+    if (!esAmbosPropios && !propietarioOponente) {
+      return req.error(400, "Debe indicar el propietario del gallo rival.");
+    }
+
+    let aveData = null;
+    if (ave_ID) {
+      aveData = await SELECT.one.from(Aves).where({
+        ID: ave_ID,
+        usuario_ID: userId,
+      });
+
+      if (!aveData) {
+        return req.error(404, "Ave no encontrada");
+      }
+    }
+
+    // if (aveData.estado !== "ACTIVO") {
+    //   return req.error(400, "El ave no estÃ¡ activa");
+    // }
+
+    let nombreRival = nombreOponente || null;
+    let propietarioRival = propietarioOponente || null;
+    let procedenciaRival = procedenciaOponente || null;
+    let combatienteBId = null;
+    let textoRivalPropio = textoCombatienteB || null;
+
+    if (esAmbosPropios && combatienteB_ID) {
+      if (esMismoId(combatienteB_ID, ave_ID)) {
+        return req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteB_ID,
+        usuario_ID: userId,
+      });
+
+      if (!combatienteB) {
+        return req.error(404, "Combatiente B no encontrado para el usuario actual.");
+      }
+
+      // if (combatienteB.estado !== "ACTIVO") {
+      //   return req.error(400, "El Combatiente B no esta activo");
+      // }
+
+      combatienteBId = combatienteB_ID;
+      textoRivalPropio = null;
+      nombreRival = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      propietarioRival = null;
+      procedenciaRival = null;
+    } else if (esAmbosPropios) {
+      nombreRival = textoRivalPropio;
+      propietarioRival = null;
+      procedenciaRival = null;
+    }
+
+    const hace30Dias = new Date();
+    hace30Dias.setDate(hace30Dias.getDate() - 30);
+
+    const peleasRecientes = ave_ID
+      ? await SELECT.from(Peleas)
+        .where({ ave_ID })
+        .and({ fecha: { ">": hace30Dias.toISOString() } })
+      : [];
+
+    if (peleasRecientes.length > 0) {
+      req.warn("El ave tuvo una pelea en los Ãºltimos 30 dÃ­as");
+    }
+
+    const nuevaPelea = {
+      ID: crypto.randomUUID(),
+      ave_ID: ave_ID || null,
+      combatienteATexto: ave_ID ? null : textoCombatienteA,
+      combatienteB_ID: combatienteBId,
+      combatienteBTexto: combatienteBId ? null : textoRivalPropio,
+      usuario_ID: userId,
+      ambosPropios: esAmbosPropios,
+      fecha: normalizarDateTimeCAP(fecha),
+      tipoCombate,
+      lugar: lugar || null,
+      evento: evento || null,
+      nombreOponente: nombreRival,
+      propietarioOponente: propietarioRival,
+      procedenciaOponente: procedenciaRival,
+      resultado: resultado || null,
+      metodoVictoria: metodoVictoria || null,
+      premioDinero: premioDinero === null || premioDinero === undefined || premioDinero === "" ? null : Number(premioDinero),
+      lesiones: lesiones || null,
+      observaciones: observaciones || null,
+    };
+
+    await db.run(INSERT.into(Peleas).entries(nuevaPelea));
+
+    return SELECT.one.from(Peleas).where({
+      ID: nuevaPelea.ID,
+      usuario_ID: userId,
+    });
+  });
+
+  this.before(["UPDATE", "DELETE"], "Peleas", async (req) => {
+    const peleaId = req.params?.[0]?.ID || req.data?.ID;
+    const userId = req.jwtUser?.id;
+
+    if (!peleaId || !userId) return;
+
+    const pelea = await SELECT.one.from(Peleas).where({
+      ID: peleaId,
+      usuario_ID: userId,
+    });
+
+    if (!pelea) {
+      req.error(404, "Combate no encontrado para el usuario actual.");
+    }
+
+    if (req.event !== "UPDATE") return;
+
+    const camposActualizados = Object.keys(req.data || {}).filter((campo) => campo !== "ID");
+    const soloActualizaVideo = camposActualizados.length > 0 && camposActualizados.every((campo) =>
+      [
+        "videoUrl",
+        "videoStorageProvider",
+        "videoStorageBucket",
+        "videoStorageKey",
+        "videoNombreArchivo",
+        "videoMimeType",
+        "videoSizeBytes",
+        "videoEstadoCarga",
+      ].includes(campo),
+    );
+
+    if (soloActualizaVideo) return;
+
+    const data = { ...pelea, ...req.data };
+    const aveId = data.ave_ID || data.ave?.ID;
+    const combatienteBId = data.combatienteB_ID || data.combatienteB?.ID;
+    const ambosPropios = data.ambosPropios !== false;
+    const textoCombatienteA = String(data.combatienteATexto || "").trim();
+    const textoCombatienteB = String(data.combatienteBTexto || "").trim();
+
+    if (!aveId && !textoCombatienteA) {
+      req.error(400, "Debe seleccionar o ingresar el Combatiente A.");
+    }
+
+    if (ambosPropios && !combatienteBId && !textoCombatienteB) {
+      req.error(400, "Debe seleccionar o ingresar el Combatiente B cuando ambas aves son propias.");
+    }
+
+    if (!ambosPropios && !data.nombreOponente) {
+      req.error(400, "Debe indicar el nombre del gallo rival.");
+    }
+
+    if (!ambosPropios && !data.propietarioOponente) {
+      req.error(400, "Debe indicar el propietario del gallo rival.");
+    }
+
+    if (ambosPropios && combatienteBId) {
+      if (esMismoId(combatienteBId, aveId)) {
+        req.error(400, "El Combatiente A y B no pueden ser el mismo ave.");
+      }
+
+      const combatienteB = await SELECT.one.from(Aves).where({
+        ID: combatienteBId,
+        usuario_ID: userId,
+      });
+
+      if (!combatienteB || combatienteB.estado !== "ACTIVO") {
+        req.error(400, "Combatiente B no encontrado o inactivo.");
+      }
+
+      req.data.nombreOponente = `${combatienteB.placa || "Sin placa"} - ${combatienteB.nombre || "Sin nombre"}`;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else if (ambosPropios) {
+      req.data.nombreOponente = textoCombatienteB;
+      req.data.propietarioOponente = null;
+      req.data.procedenciaOponente = null;
+    } else {
+      req.data.combatienteB_ID = null;
+    }
+  });
+
+  this.on("prepararCargaVideoCombate", async (req) => {
+    const { peleaId, nombreArchivo, mimeType, tamanioBytes } = req.data;
+    const userId = req.jwtUser?.id;
+
+    await validarPlanPremiumMultimedia(req);
+
+    if (!peleaId) {
+      req.error(400, "Debe indicar el combate para asociar el video.");
+    }
+
+    if (!nombreArchivo || !mimeType) {
+      req.error(400, "Debe seleccionar un archivo de video valido.");
+    }
+
+    if (!String(mimeType).startsWith("video/")) {
+      req.error(400, "Solo se permiten archivos de video.");
+    }
+
+    if (Number(tamanioBytes || 0) <= 0) {
+      req.error(400, "El video seleccionado no tiene contenido.");
+    }
+
+    if (Number(tamanioBytes) > VIDEO_COMBATE_MAX_BYTES) {
+      req.error(400, "El video supera el tamano maximo permitido.");
+    }
+
+    const where = userId ? { ID: peleaId, usuario_ID: userId } : { ID: peleaId };
+    const pelea = await SELECT.one.from(Peleas).where(where);
+
+    if (!pelea) {
+      req.error(404, "Combate no encontrado para el usuario actual.");
+    }
+
+    const metadata = construirMetadataVideoCombate({
+      peleaId,
+      usuarioId: userId,
+      nombreArchivo,
+      mimeType,
+    });
+    metadata.uploadUrl = await crearUploadUrlS3({
+      bucket: AWS_S3_COMBATES_BUCKET,
+      storageKey: metadata.storageKey,
+      mimeType: metadata.mimeType,
+    });
+
+    await UPDATE(Peleas)
+      .set({
+        videoUrl: metadata.videoUrl,
+        videoStorageProvider: metadata.storageProvider,
+        videoStorageBucket: metadata.storageBucket,
+        videoStorageKey: metadata.storageKey,
+        videoNombreArchivo: metadata.nombreArchivo,
+        videoMimeType: metadata.mimeType,
+        videoSizeBytes: Number(tamanioBytes),
+        videoEstadoCarga: metadata.estadoCarga,
+      })
+      .where({ ID: peleaId });
+
+    return {
+      success: true,
+      message: AWS_S3_COMBATES_BUCKET
+        ? "Video preparado para carga en AWS S3."
+        : "Video registrado en modo preparacion. Configura AWS_S3_COMBATES_BUCKET para activar S3.",
+      uploadUrl: metadata.uploadUrl,
+      videoUrl: metadata.videoUrl,
+      storageProvider: metadata.storageProvider,
+      storageBucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      estadoCarga: metadata.estadoCarga,
+    };
+  });
+
+  this.on("prepararCargaArchivoAve", async (req) => {
+    const { aveId, nombreArchivo, mimeType, tamanioBytes, tipo } = req.data;
+    const userId = req.jwtUser?.id;
+    const tipoArchivo = String(tipo || "").toUpperCase();
+
+    await validarPlanPremiumMultimedia(req);
+
+    if (!aveId) {
+      req.error(400, "Debe indicar el ave para asociar el archivo.");
+    }
+
+    if (!nombreArchivo || !mimeType) {
+      req.error(400, "Debe seleccionar un archivo valido.");
+    }
+
+    if (!["IMAGEN", "VIDEO"].includes(tipoArchivo)) {
+      req.error(400, "El tipo debe ser IMAGEN o VIDEO.");
+    }
+
+    if (tipoArchivo === "IMAGEN" && !String(mimeType).startsWith("image/")) {
+      req.error(400, "El archivo seleccionado no es una imagen valida.");
+    }
+
+    if (tipoArchivo === "VIDEO" && !String(mimeType).startsWith("video/")) {
+      req.error(400, "El archivo seleccionado no es un video valido.");
+    }
+
+    if (Number(tamanioBytes || 0) <= 0) {
+      req.error(400, "El archivo seleccionado no tiene contenido.");
+    }
+
+    if (Number(tamanioBytes) > ARCHIVO_AVE_MAX_BYTES) {
+      req.error(400, "El archivo supera el tamano maximo permitido.");
+    }
+
+    const where = userId ? { ID: aveId, usuario_ID: userId } : { ID: aveId };
+    const ave = await SELECT.one.from(Aves).where(where);
+
+    if (!ave) {
+      req.error(404, "Ave no encontrada para el usuario actual.");
+    }
+
+    const metadata = construirMetadataArchivoAve({
+      aveId,
+      usuarioId: userId,
+      nombreArchivo,
+      mimeType,
+      tipo: tipoArchivo,
+    });
+    metadata.uploadUrl = await crearUploadUrlS3({
+      bucket: AWS_S3_AVES_BUCKET,
+      storageKey: metadata.storageKey,
+      mimeType: metadata.mimeType,
+    });
+
+    return {
+      success: true,
+      message: AWS_S3_AVES_BUCKET
+        ? "Archivo preparado para carga en AWS S3."
+        : "Archivo registrado en modo preparacion. Configura AWS_S3_AVES_BUCKET o AWS_S3_BUCKET para activar S3.",
+      uploadUrl: metadata.uploadUrl,
+      fileUrl: metadata.fileUrl,
+      storageProvider: metadata.storageProvider,
+      storageBucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      nombreArchivo: metadata.nombreArchivo,
+      mimeType: metadata.mimeType,
+      tipo: metadata.tipo,
+    };
+  });
+
+  this.on("obtenerUrlLecturaS3", async (req) => {
+    await validarPlanPremiumMultimedia(req);
+
+    const objeto = obtenerObjetoDesdeUrlS3(req.data.fileUrl);
+
+    if (!objeto) {
+      req.error(400, "La URL no pertenece a un bucket S3 configurado.");
+    }
+
+    const downloadUrl = await crearDownloadUrlS3(objeto);
+
+    return {
+      success: true,
+      downloadUrl,
+    };
   });
 
   //========================================
@@ -448,6 +2884,7 @@ module.exports = cds.service.impl(async function () {
     try {
       // Aquí iría la lógica de SharePoint
       // await crearCarpetaSharePoint(data.ID, data.placa);
+      await recalcularComposicionLineaAve(data.ID);
       console.log(`Ave creada: ${data.placa}`);
     } catch (error) {
       console.error("Error creando carpeta SharePoint:", error);
@@ -552,6 +2989,23 @@ module.exports = cds.service.impl(async function () {
     return JSON.stringify(arbol);
   });
 
+  this.on("recalcularComposicionLineas", "Aves", async (req) => {
+    const { ID } = req.params[0];
+    const usuarioId = req.jwtUser?.id;
+
+    const ave = await SELECT.one.from(Aves).where({ ID, usuario_ID: usuarioId });
+    if (!ave) {
+      return req.reject(404, "Ave no encontrada");
+    }
+
+    await recalcularComposicionLineaAve(ID);
+
+    return {
+      success: true,
+      message: "Composicion de lineas recalculada",
+    };
+  });
+
   //========================================
   // FUNCIONES PERSONALIZADAS
   //========================================
@@ -589,9 +3043,9 @@ module.exports = cds.service.impl(async function () {
 
     const edadMeses = ave.fechaNacimiento
       ? Math.floor(
-          (new Date() - new Date(ave.fechaNacimiento)) /
-            (30 * 24 * 60 * 60 * 1000),
-        )
+        (new Date() - new Date(ave.fechaNacimiento)) /
+        (30 * 24 * 60 * 60 * 1000),
+      )
       : 0;
 
     return {
@@ -666,12 +3120,45 @@ module.exports = cds.service.impl(async function () {
       estado: "ACTIVA",
     });
 
-    return SELECT.one.from(Incubaciones).where({ codigo });
+    return SELECT.one.from(Incubaciones).wh | ere({ codigo });
   });
 
   //========================================
   // FUNCIONES AUXILIARES
-  //========================================
+  //========================================  
+
+  async function enviarCorreoActivacion(email, tokenActivacion) {
+    const apiKey = process.env.SENDGRID_API_KEY;
+
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+    if (!apiKey) {
+      throw new Error("Falta SENDGRID_API_KEY");
+    }
+
+    if (!fromEmail) {
+      throw new Error("Falta SENDGRID_FROM_EMAIL");
+    }
+
+    sgMail.setApiKey(apiKey);
+
+    const linkActivacion = construirLinkActivacion(tokenActivacion);
+
+    const msg = {
+      to: email,
+      from: fromEmail,
+      subject: "Activa tu cuenta",
+      html: `
+      <h2>Bienvenido</h2>
+      <p>Tu cuenta fue creada correctamente.</p>
+      <p>Haz clic en el siguiente enlace para activarla:</p>
+      <p><a href="${linkActivacion}">${linkActivacion}</a></p>
+      <p>Este enlace vence en 24 horas.</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid status:", response.statusCode);
+  }
 
   async function construirArbolGenealogico(aveId, generaciones) {
     if (generaciones <= 0) return null;
@@ -705,4 +3192,737 @@ module.exports = cds.service.impl(async function () {
 
     return nodo;
   }
+
+  async function obtenerAveBasica(aveId) {
+    if (!aveId) return null;
+    return SELECT.one
+      .from(Aves)
+      .columns("ID", "placa", "nombre", "sexo", "padre_ID", "madre_ID", "aptoReproduccion", "estado")
+      .where({ ID: aveId });
+  }
+
+  async function construirMapaAncestros(aveId, generaciones, distancia = 0, mapa = new Map()) {
+    if (!aveId || distancia > generaciones) return mapa;
+
+    const ave = await obtenerAveBasica(aveId);
+    if (!ave) return mapa;
+
+    const existente = mapa.get(ave.ID);
+    if (!existente || distancia < existente.distancia) {
+      mapa.set(ave.ID, {
+        ID: ave.ID,
+        placa: ave.placa,
+        nombre: ave.nombre,
+        sexo: ave.sexo,
+        distancia,
+        padre_ID: ave.padre_ID,
+        madre_ID: ave.madre_ID,
+      });
+    }
+
+    if (distancia < generaciones) {
+      await construirMapaAncestros(ave.padre_ID, generaciones, distancia + 1, mapa);
+      await construirMapaAncestros(ave.madre_ID, generaciones, distancia + 1, mapa);
+    }
+
+    return mapa;
+  }
+
+  function clasificarCruce(porcentaje) {
+    if (porcentaje >= 25) {
+      return {
+        nivelRiesgo: "ALTO",
+        decision: "NO_RECOMENDADO",
+        state: "Error",
+        messageType: "Error",
+        recomendacion: "Riesgo alto. No repetir ni aprobar salvo una justificación técnica excepcional y seguimiento estricto de salud, fertilidad y vigor.",
+      };
+    }
+
+    if (porcentaje >= 12.5) {
+      return {
+        nivelRiesgo: "MODERADO",
+        decision: "OBSERVAR",
+        state: "Warning",
+        messageType: "Warning",
+        recomendacion: "Cruce cerrado. Puede usarse solo con aves sanas, fértiles y evaluadas. Medir nacimientos, supervivencia y defectos antes de repetir.",
+      };
+    }
+
+    if (porcentaje > 0) {
+      return {
+        nivelRiesgo: "BAJO_MODERADO",
+        decision: "APROBADO",
+        state: "Success",
+        messageType: "Success",
+        recomendacion: "Riesgo manejable para conservar familia. Mantener registros y evitar cerrar varias generaciones consecutivas.",
+      };
+    }
+
+    return {
+      nivelRiesgo: "BAJO",
+      decision: "APROBADO",
+      state: "Success",
+      messageType: "Success",
+      recomendacion: "No se detectó parentesco dentro de las generaciones revisadas. Útil para refrescar sangre o crear una base familiar.",
+    };
+  }
+
+  function describirParentesco(tipoParentesco) {
+    const descripciones = {
+      PADRE_HIJA: "Cruce directo padre x hija.",
+      MADRE_HIJO: "Cruce directo madre x hijo.",
+      ABUELO_NIETA: "Cruce abuelo x nieta.",
+      ABUELA_NIETO: "Cruce abuela x nieto.",
+      HERMANOS_COMPLETOS: "Cruce entre hermanos completos.",
+      MEDIO_HERMANOS: "Cruce entre medio hermanos.",
+      TIO_SOBRINA: "Cruce tío x sobrina.",
+      TIA_SOBRINO: "Cruce tía x sobrino.",
+      PRIMOS: "Cruce entre primos.",
+      PARENTESCO_LEJANO: "Se detectaron ancestros comunes lejanos.",
+      SIN_PARENTESCO: "No se detecta parentesco directo.",
+    };
+
+    return descripciones[tipoParentesco] || "Parentesco detectado.";
+  }
+
+  async function obtenerResumenComposicionCruce(machoId, hembraId, lineaId) {
+    await Promise.all([
+      recalcularComposicionLineaAve(machoId),
+      recalcularComposicionLineaAve(hembraId),
+    ]);
+
+    const [composicionMacho, composicionHembra] = await Promise.all([
+      obtenerComposicionBaseAve(machoId),
+      obtenerComposicionBaseAve(hembraId),
+    ]);
+
+    const machoMap = new Map((composicionMacho || []).map((item) => [item.linea_ID, Number(item.porcentaje || 0)]));
+    const hembraMap = new Map((composicionHembra || []).map((item) => [item.linea_ID, Number(item.porcentaje || 0)]));
+    const lineasMacho = Array.from(machoMap.keys()).filter(Boolean);
+    const lineasHembra = Array.from(hembraMap.keys()).filter(Boolean);
+    const lineasComunes = lineasMacho.filter((id) => hembraMap.has(id));
+    const porcentajeMachoLinea = lineaId ? Number(machoMap.get(lineaId) || 0) : 0;
+    const porcentajeHembraLinea = lineaId ? Number(hembraMap.get(lineaId) || 0) : 0;
+
+    return {
+      composicionMacho,
+      composicionHembra,
+      lineasMacho,
+      lineasHembra,
+      lineasComunes,
+      porcentajeMachoLinea,
+      porcentajeHembraLinea,
+      tieneLineaSolicitada: porcentajeMachoLinea > 0 || porcentajeHembraLinea > 0,
+      ambosTienenLineaSolicitada: porcentajeMachoLinea > 0 && porcentajeHembraLinea > 0,
+      ambosSinLinea: lineasMacho.length === 0 && lineasHembra.length === 0,
+    };
+  }
+
+  async function clasificarTipoCruceTecnico({ machoId, hembraId, lineaId, tipoParentesco, porcentajeConsanguinidad }) {
+    const parentesco = String(tipoParentesco || "").toUpperCase();
+    const porcentaje = Number(porcentajeConsanguinidad || 0);
+
+    if (["PADRE_HIJA", "MADRE_HIJO", "HERMANOS_COMPLETOS"].includes(parentesco) || porcentaje >= 25) {
+      return "INBREEDING";
+    }
+
+    if (
+      ["ABUELO_NIETA", "ABUELA_NIETO", "TIO_SOBRINA", "TIA_SOBRINO", "MEDIO_HERMANOS", "PRIMOS", "PARENTESCO_LEJANO"].includes(parentesco) ||
+      porcentaje > 0
+    ) {
+      return "LINEBREEDING";
+    }
+
+    const resumen = await obtenerResumenComposicionCruce(machoId, hembraId, lineaId);
+
+    if (resumen.ambosSinLinea) {
+      return "CRUCE_ABIERTO";
+    }
+
+    if (lineaId && resumen.tieneLineaSolicitada) {
+      if (resumen.ambosTienenLineaSolicitada) {
+        return "CRUCE_POR_LINAJE";
+      }
+      return "BACKCROSS";
+    }
+
+    if (resumen.lineasMacho.length && resumen.lineasHembra.length && !resumen.lineasComunes.length) {
+      return "OUTCROSS";
+    }
+
+    if (resumen.lineasComunes.length) {
+      return "CRUCE_POR_LINAJE";
+    }
+
+    return "CRUCE_ABIERTO";
+  }
+
+  async function analizarParentescoAutomatico(machoId, hembraId, generaciones = 5, lineaId = null) {
+    const maxGeneraciones = Math.min(Math.max(Number(generaciones) || 5, 1), 8);
+    const macho = await obtenerAveBasica(machoId);
+    const hembra = await obtenerAveBasica(hembraId);
+
+    if (!macho || !hembra) throw new Error("Macho o hembra no encontrados.");
+    if (macho.ID === hembra.ID) throw new Error("El macho y la hembra no pueden ser el mismo ejemplar.");
+    if (macho.sexo !== "M" || hembra.sexo !== "H") throw new Error("Verifica que el macho sea M y la hembra sea H.");
+    if (macho.aptoReproduccion === false || hembra.aptoReproduccion === false) {
+      throw new Error("Uno de los reproductores no está apto para reproducción.");
+    }
+
+    const mapaMacho = await construirMapaAncestros(macho.ID, maxGeneraciones);
+    const mapaHembra = await construirMapaAncestros(hembra.ID, maxGeneraciones);
+    let tipoParentesco = "SIN_PARENTESCO";
+
+    if (hembra.padre_ID === macho.ID) tipoParentesco = "PADRE_HIJA";
+    else if (macho.madre_ID === hembra.ID) tipoParentesco = "MADRE_HIJO";
+    else if (mapaHembra.get(macho.ID)?.distancia === 2) tipoParentesco = "ABUELO_NIETA";
+    else if (mapaMacho.get(hembra.ID)?.distancia === 2) tipoParentesco = "ABUELA_NIETO";
+
+    const ancestrosComunes = [];
+    let porcentaje = ["PADRE_HIJA", "MADRE_HIJO"].includes(tipoParentesco) ? 25 : 0;
+
+    for (const [id, ancestroMacho] of mapaMacho.entries()) {
+      if (id === macho.ID || id === hembra.ID) continue;
+      const ancestroHembra = mapaHembra.get(id);
+      if (!ancestroHembra) continue;
+
+      const contribucion = Math.pow(0.5, ancestroMacho.distancia + ancestroHembra.distancia + 1) * 100;
+      porcentaje += contribucion;
+      ancestrosComunes.push({
+        ID: id,
+        placa: ancestroMacho.placa,
+        nombre: ancestroMacho.nombre,
+        distanciaMacho: ancestroMacho.distancia,
+        distanciaHembra: ancestroHembra.distancia,
+        contribucion: Number(contribucion.toFixed(2)),
+      });
+    }
+
+    if (tipoParentesco === "SIN_PARENTESCO" && ancestrosComunes.length) {
+      const padresCompartidos = ancestrosComunes.filter((a) => a.distanciaMacho === 1 && a.distanciaHembra === 1);
+      const relacionTio = ancestrosComunes.some((a) =>
+        (a.distanciaMacho === 1 && a.distanciaHembra === 2) ||
+        (a.distanciaMacho === 2 && a.distanciaHembra === 1)
+      );
+      const relacionPrimos = ancestrosComunes.some((a) => a.distanciaMacho === 2 && a.distanciaHembra === 2);
+
+      if (padresCompartidos.length) tipoParentesco = padresCompartidos.length >= 2 ? "HERMANOS_COMPLETOS" : "MEDIO_HERMANOS";
+      else if (relacionTio) tipoParentesco = "TIO_SOBRINA";
+      else if (relacionPrimos) tipoParentesco = "PRIMOS";
+      else tipoParentesco = "PARENTESCO_LEJANO";
+    }
+
+    porcentaje = Number(Math.min(porcentaje, 100).toFixed(2));
+    const clasificacion = clasificarCruce(porcentaje);
+    const tipoCruce = await clasificarTipoCruceTecnico({
+      machoId,
+      hembraId,
+      lineaId,
+      tipoParentesco,
+      porcentajeConsanguinidad: porcentaje,
+    });
+
+    return {
+      tipoCruce,
+      tipoParentesco,
+      nivelRiesgo: clasificacion.nivelRiesgo,
+      porcentaje,
+      descripcion: describirParentesco(tipoParentesco),
+      recomendacion: clasificacion.recomendacion,
+      decision: clasificacion.decision,
+      state: clasificacion.state,
+      messageType: clasificacion.messageType,
+      ancestrosComunes: JSON.stringify(ancestrosComunes),
+    };
+  }
+
+  this.on("eliminarAve", async (req) => {
+    try {
+      console.log("BODY:", req.data);
+
+      const aveId = req.data.aveId;
+
+      if (!aveId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
+
+      const ave = await SELECT.one.from(Aves).where({ ID: aveId });
+
+      if (!ave) {
+        return req.reject(404, "Ave no encontrada");
+      }
+
+      await UPDATE(Aves)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: aveId });
+
+      return {
+        success: true,
+        message: "Ave eliminada correctamente",
+      };
+    } catch (error) {
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
+    }
+  });
+
+  this.on("eliminarLineaAve", async (req) => {
+    try {
+      console.log("BODY:", req.data);
+
+      const lineaAveId = req.data.lineaAveId;
+
+      if (!lineaAveId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
+
+      const ave = await SELECT.one.from(LineaAves).where({ ID: lineaAveId });
+
+      if (!ave) {
+        return req.reject(404, "Línea de ave no encontrada");
+      }
+
+      await UPDATE(LineaAves)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: lineaAveId });
+
+      return {
+        success: true,
+        message: "Línea de ave eliminada correctamente",
+      };
+    } catch (error) {
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
+    }
+  });
+
+  this.on("eliminarIncubacion", async (req) => {
+    try {
+      console.log("BODY:", req.data);
+
+      const incubacionId = req.data.incubacionId;
+
+      if (!incubacionId) {
+        return req.reject(400, "El ID es obligatorio");
+      }
+
+      const ave = await SELECT.one.from(Incubaciones).where({ ID: incubacionId });
+
+      if (!ave) {
+        return req.reject(404, "Incubación no encontrada");
+      }
+
+      await UPDATE(Incubaciones)
+        .set({
+          estado: "ELIMINADO",
+        })
+        .where({ ID: incubacionId });
+
+      return {
+        success: true,
+        message: "Incubación eliminada correctamente",
+      };
+    } catch (error) {
+      console.error("ERROR BACKEND:", error);
+      return req.reject(500, error.message);
+    }
+  });
+
+  this.on("solicitarRecuperacionPassword", async (req) => {
+    try {
+      const { email } = req.data;
+
+      if (!email) {
+        return req.error(400, "El email es requerido");
+      }
+
+      const db = await cds.connect.to("db");
+      const { Usuario } = cds.entities("ave.combatiente");
+
+      const emailNormalizado = email.trim().toLowerCase();
+
+      const user = await db.run(
+        SELECT.one
+          .from(Usuario)
+          .columns("ID", "email", "nombre", "apellido", "estado")
+          .where({ email: emailNormalizado }),
+      );
+
+      // Por seguridad no reveles si existe o no
+      if (!user) {
+        return {
+          success: true,
+          message:
+            "Si el correo existe, se enviará un enlace para restablecer la contraseña.",
+        };
+      }
+
+      const tokenRecuperacion = crypto.randomBytes(32).toString("hex");
+      const tokenRecuperacionExp = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+
+      await db.run(
+        UPDATE(Usuario)
+          .set({
+            tokenRecuperacion,
+            tokenRecuperacionExp,
+          })
+          .where({ ID: user.ID }),
+      );
+
+      try {
+        await enviarCorreoRecuperacion(emailNormalizado, tokenRecuperacion);
+      } catch (mailError) {
+        console.error("Error enviando correo de recuperación:", mailError);
+      }
+
+      return {
+        success: true,
+        message:
+          "Si el correo existe, se enviará un enlace para restablecer la contraseña.",
+      };
+    } catch (error) {
+      console.error("Error en solicitarRecuperacionPassword:", error);
+      return req.error(500, "Error interno al procesar la solicitud");
+    }
+  });
+
+  this.on("restablecerPassword", async (req) => {
+    try {
+      const { token, newPassword } = req.data;
+
+      if (!token || !newPassword) {
+        return req.error(400, "Token y nueva contraseña son requeridos");
+      }
+
+      if (newPassword.length < 6) {
+        return req.error(
+          400,
+          "La nueva contraseña debe tener al menos 6 caracteres",
+        );
+      }
+
+      const db = await cds.connect.to("db");
+      const { Usuario } = cds.entities("ave.combatiente");
+
+      const user = await db.run(
+        SELECT.one
+          .from(Usuario)
+          .columns("ID", "tokenRecuperacionExp")
+          .where({ tokenRecuperacion: token }),
+      );
+
+      if (!user) {
+        return req.error(400, "El enlace no es válido");
+      }
+
+      if (
+        !user.tokenRecuperacionExp ||
+        new Date(user.tokenRecuperacionExp) < new Date()
+      ) {
+        return req.error(400, "El enlace ha expirado");
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+
+      await db.run(
+        UPDATE(Usuario)
+          .set({
+            password: passwordHash,
+            tokenRecuperacion: null,
+            tokenRecuperacionExp: null,
+          })
+          .where({ ID: user.ID }),
+      );
+
+      return {
+        success: true,
+        message: "La contraseña se actualizó correctamente",
+      };
+    } catch (error) {
+      console.error("Error en restablecerPassword:", error);
+      return req.error(500, "Error interno al restablecer la contraseña");
+    }
+  });
+
+  async function enviarCorreoRecuperacion(email, tokenRecuperacion) {
+    const apiKey = process.env.SENDGRID_API_KEY;
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+    const frontendUrl =
+      process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+
+    if (!apiKey) throw new Error("Falta SENDGRID_API_KEY");
+    if (!fromEmail) throw new Error("Falta SENDGRID_FROM_EMAIL");
+
+    sgMail.setApiKey(apiKey);
+
+    const link = `${frontendUrl}#/reset-password/${tokenRecuperacion}`;
+
+    const msg = {
+      to: email,
+      from: fromEmail,
+      subject: "Recupera tu contraseña",
+      html: `
+      <h2>Recuperación de contraseña</h2>
+      <p>Recibimos una solicitud para restablecer tu contraseña.</p>
+      <p>Haz clic en el siguiente enlace:</p>
+      <p><a href="${link}">${link}</a></p>
+      <p>Este enlace vence en 1 hora.</p>
+      <p>Si no solicitaste este cambio, ignora este correo.</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid reset status:", response.statusCode);
+  }
+
+  this.on("obtenerDashboard", async (req) => {
+    const { Ave, Incubacion, IncubacionDetalle, LineaAve, Pelea } =
+      cds.entities("ave.combatiente");
+
+    const usuarioId =
+      req.jwtUser?.ID ||
+      req.jwtUser?.id ||
+      req.user?.id;
+
+    if (!usuarioId) {
+      return req.reject(401, "No se pudo identificar el usuario logueado.");
+    }
+
+    const totalAves = await SELECT.from(Ave)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const totalIncubaciones = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const incubacionesActivas = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "EN_PROCESO"
+      })
+      .columns("count(*) as total");
+
+    const incubacionesProgramadas = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "PROGRAMADA"
+      })
+      .columns("count(*) as total");
+
+    const totalAvesActivas = await SELECT.from(Ave)
+      .where({
+        usuario_ID: usuarioId,
+        estado: "ACTIVO"
+      })
+      .columns("count(*) as total");
+
+    const totalLineas = await SELECT.from(LineaAve)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" },
+        nombre: { "!=": "Cruce abierto" }
+      })
+      .columns("count(*) as total");
+
+    const planesActivos = await SELECT.from(PlanesCruces)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("macho_ID", "hembra_ID");
+    const totalPlanes = new Set(
+      (planesActivos || [])
+        .filter((plan) => plan.macho_ID && plan.hembra_ID)
+        .map((plan) => `${plan.macho_ID}|${plan.hembra_ID}`),
+    ).size;
+
+    const totalPollitos = await SELECT.from(Crias)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("count(*) as total");
+
+    const totalCombates = await SELECT.from(Pelea)
+      .where({
+        usuario_ID: usuarioId
+      })
+      .columns("count(*) as total");
+
+    const totalNacidosRes = await SELECT.from(IncubacionDetalle)
+      .where({
+        usuario_ID: usuarioId
+      })
+      .columns("sum(huevosEclosionados) as total");
+
+    const recientes = await SELECT.from(Incubacion)
+      .where({
+        usuario_ID: usuarioId,
+        estado: { "!=": "ELIMINADO" }
+      })
+      .columns("ID", "codigo", "estado", "fechaIncubacion")
+      .orderBy("createdAt desc")
+      .limit(5);
+
+    const iActivas = incubacionesActivas?.[0]?.total || 0;
+    const iProgramadas = incubacionesProgramadas?.[0]?.total || 0;
+
+    return {
+      totalAves: totalAves?.[0]?.total || 0,
+      totalIncubaciones: totalIncubaciones?.[0]?.total || 0,
+      incubacionesActivas: iActivas,
+      incubacionesProgramadas: iProgramadas,
+      totalAvesActivas: totalAvesActivas?.[0]?.total || 0,
+      totalNacidos: totalNacidosRes?.[0]?.total || 0,
+      alertaIncubaciones: iProgramadas > 0 ? `Tienes ${iProgramadas} incubaciones programadas.` : "",
+      alertaEclosion: iActivas > 0 ? `Tienes ${iActivas} incubaciones en proceso.` : "",
+      incubacionesRecientes: recientes || [],
+      totalLineas: totalLineas?.[0]?.total || 0,
+      totalPlanes,
+      totalPollitos: totalPollitos?.[0]?.total || 0,
+      totalCombates: totalCombates?.[0]?.total || 0
+    };
+  });
+
+  this.on('analizarCrucePorParentesco', async (req) => {
+    const { macho_ID, hembra_ID, tipoParentesco } = req.data;
+
+    if (!macho_ID || !hembra_ID || !tipoParentesco) {
+      return req.reject(400, 'Debe seleccionar macho, hembra y tipo de parentesco.');
+    }
+
+    if (macho_ID === hembra_ID) {
+      return req.reject(400, 'El macho y la hembra no pueden ser el mismo ejemplar.');
+    }
+
+    const reglas = {
+      PADRE_HIJA: {
+        porcentaje: 25,
+        nivelRiesgo: 'ALTO',
+        state: 'Error',
+        messageType: 'Error',
+        descripcion: 'Cruce directo padre × hija.',
+        recomendacion: 'Usar solo si el ave padre es excepcional y se busca fijar una característica muy específica. Requiere selección fuerte de crías.'
+      },
+      MADRE_HIJO: {
+        porcentaje: 25,
+        nivelRiesgo: 'ALTO',
+        state: 'Error',
+        messageType: 'Error',
+        descripcion: 'Cruce directo madre × hijo.',
+        recomendacion: 'Riesgo alto. Recomendado únicamente bajo control estricto y con descarte de crías débiles.'
+      },
+      ABUELO_NIETA: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce abuelo × nieta.',
+        recomendacion: 'Útil para reforzar características del fundador sin llegar al riesgo máximo.'
+      },
+      ABUELA_NIETO: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce abuela × nieto.',
+        recomendacion: 'Puede ayudar a consolidar línea materna. Evaluar salud, fertilidad y desempeño.'
+      },
+      TIO_SOBRINA: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce tío × sobrina.',
+        recomendacion: 'Buen cruce de línea si ambos provienen de aves sobresalientes.'
+      },
+      TIA_SOBRINO: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce tía × sobrino.',
+        recomendacion: 'Permite conservar sangre familiar con riesgo manejable.'
+      },
+      MEDIO_HERMANOS: {
+        porcentaje: 12.5,
+        nivelRiesgo: 'MODERADO',
+        state: 'Warning',
+        messageType: 'Warning',
+        descripcion: 'Cruce entre medio hermanos.',
+        recomendacion: 'Puede fijar cualidades, pero vigilar vigor, tamaño, fertilidad y salud.'
+      },
+      PRIMOS: {
+        porcentaje: 6.25,
+        nivelRiesgo: 'BAJO_MODERADO',
+        state: 'Success',
+        messageType: 'Success',
+        descripcion: 'Cruce entre primos.',
+        recomendacion: 'Opción más segura para mantener familia sin exceso de consanguinidad.'
+      },
+      SIN_PARENTESCO: {
+        porcentaje: 0,
+        nivelRiesgo: 'BAJO',
+        state: 'Success',
+        messageType: 'Success',
+        descripcion: 'No se detecta parentesco directo.',
+        recomendacion: 'Útil para refrescar sangre o crear una nueva base familiar.'
+      }
+    };
+
+    const resultado = reglas[tipoParentesco];
+
+    if (!resultado) {
+      return req.reject(400, 'Tipo de parentesco no válido.');
+    }
+
+    return resultado;
+  });
+
+  this.on("analizarCruceAutomatico", async (req) => {
+    const { macho_ID, hembra_ID, generaciones, linea_ID } = req.data;
+
+    if (!macho_ID || !hembra_ID) {
+      return req.reject(400, "Debe seleccionar macho y hembra.");
+    }
+
+    try {
+      return await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5, linea_ID || null);
+    } catch (error) {
+      return req.reject(400, error.message);
+    }
+  });
+
+  this.on("obtenerLineaCruceAbierto", async (req) => {
+    const linea = await obtenerLineaCruceAbierto(req.jwtUser?.id);
+    if (!linea) {
+      return req.reject(400, "No se pudo preparar la linea de cruce abierto.");
+    }
+
+    return { lineaId: linea.ID };
+  });
+
+  this.before("READ", Incubaciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Peleas, (req) => agregarFiltroUsuario(req));
+  this.before("READ", IncubacionDetalles, (req) => agregarFiltroUsuario(req));
+  this.before("READ", PlanesCruces, (req) => {
+    agregarFiltroUsuario(req);
+    agregarFiltroEstadoNoEliminado(req);
+  });
+  this.before("READ", LineasAves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", EvaluacionesAves, (req) => agregarFiltroUsuario(req));
+  this.before("READ", EvaluacionesPleito, (req) => agregarFiltroUsuario(req));
+
 });

@@ -18,7 +18,32 @@ service AveCombatienteService {
             action marcarComoVendido(precio: Decimal, comprador: String) returns Aves;
             action marcarComoFallecido(fecha: Date, causa: String)       returns Aves;
             action generarArbolGenealogico()                             returns LargeString; // JSON del árbol
+            action recalcularComposicionLineas()                          returns {
+                success : Boolean;
+                message : String;
+            };
         };
+
+    action   eliminarAve(aveId: String)                                                                                                                 returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   eliminarCria(criaId: String)                                                                                                               returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   registrarCriaComoAve(criaId: String,
+                                  placa: String,
+                                  genero: String)                                                                                                       returns Aves;
+
+    entity Crias               as projection on combatiente.Cria;
+    entity LineasAves          as projection on combatiente.LineaAve;
+    entity ComposicionesLineaAve as projection on combatiente.ComposicionLineaAve;
+    entity PlanesCruces        as projection on combatiente.PlanCruce;
+    entity EvaluacionesAves    as projection on combatiente.EvaluacionAve;
+    entity EvaluacionesPleito  as projection on combatiente.EvaluacionPleito;
 
     ////@odata.draft.enabled
     @cds.redirection.target
@@ -29,7 +54,18 @@ service AveCombatienteService {
 
     //@odata.draft.enabled
     @cds.redirection.target
-    entity Incubaciones        as projection on combatiente.Incubacion;
+    entity Incubaciones        as projection on combatiente.Incubacion
+        actions {
+            action iniciar()                      returns String;
+            action finalizar(cantidadFertiles: Integer,
+                             cantidadNacidos: Integer,
+                             cantidadNoEclosion: Integer,
+                             observacion: String) returns String;
+
+            action cancelar(observacion: String)  returns String;
+        };
+
+    entity IncubacionDetalles  as projection on combatiente.IncubacionDetalle;
 
     //@odata.draft.enabled
     entity Tratamientos        as projection on combatiente.Tratamiento;
@@ -59,16 +95,9 @@ service AveCombatienteService {
     // USUARIOS Y SEGURIDAD
     //========================================
 
-    @restrict: [{
-        grant: 'READ',
-        to   : 'Admin'
-    }]
     entity Usuarios            as projection on combatiente.Usuario;
+    entity Suscripciones       as projection on combatiente.Suscripcion;
 
-    @restrict: [{
-        grant: '*',
-        to   : 'Admin'
-    }]
     entity Roles               as projection on combatiente.Rol;
 
     //========================================
@@ -82,18 +111,26 @@ service AveCombatienteService {
     // VISTAS Y REPORTES
     //========================================
 
+    @readonly
+    entity IncubacionesActivas as
+        select from combatiente.Incubacion
+        where
+            estado <> 'ELIMINADO';
+
     // Vista: Aves activas con estadísticas
     @readonly
     entity AvesActivas         as
-        select from combatiente.Ave {
-            *,
-            padre.nombre as nombrePadre,
-            madre.nombre as nombreMadre,
-            raza.nombre  as nombreRaza,
-            color.nombre as nombreColor
-        }
+        select from combatiente.Ave
         where
-            estado = 'ACTIVO';
+            estado <> 'ELIMINADO';
+
+    @cds.redirection.target
+    @readonly
+    entity LineasAvesActivas   as
+        select from combatiente.LineaAve
+        where
+                estado <> 'ELIMINADO'
+            and nombre <> 'Cruce abierto';
 
     // Vista: Top gallos por peleas ganadas
     @readonly
@@ -117,15 +154,6 @@ service AveCombatienteService {
             placa,
             nombre;
 
-    // Vista: Resumen de incubaciones
-    @readonly
-    entity ResumenIncubaciones as
-        select from combatiente.Incubacion {
-            *,
-            padre.placa                                                     as placaPadre,
-            madre.placa                                                     as placaMadre,
-            cast ( huevosEclosionados as Decimal(5, 2)) / totalHuevos * 100 as tasaEclosion : Decimal(5, 2)
-        };
 
     // Vista: Evolución de peso por ave
     @readonly
@@ -174,10 +202,10 @@ service AveCombatienteService {
     //========================================
 
     // Obtener árbol genealógico
-    function obtenerGenealogiaCompleta(aveId: String) returns LargeString;
+    function obtenerGenealogiaCompleta(aveId: String)                                                                                                   returns LargeString;
 
     // Calcular estadísticas de un ave
-    function calcularEstadisticasAve(aveId: String)   returns {
+    function calcularEstadisticasAve(aveId: String)                                                                                                     returns {
         totalPeleas         : Integer;
         victorias           : Integer;
         derrotas            : Integer;
@@ -189,10 +217,10 @@ service AveCombatienteService {
     };
 
     // Obtener aves disponibles para reproducción
-    function avesDisponiblesReproduccion()            returns array of Aves;
+    function avesDisponiblesReproduccion()                                                                                                              returns array of Aves;
 
     // Calcular rentabilidad de un ave
-    function calcularRentabilidad(aveId: String)      returns {
+    function calcularRentabilidad(aveId: String)                                                                                                        returns {
         inversionTotal : Decimal;
         ingresosTotal  : Decimal;
         ganancia       : Decimal;
@@ -207,22 +235,96 @@ service AveCombatienteService {
     action   crearIncubacion(padreId: String,
                              madreId: String,
                              totalHuevos: Integer,
-                             fechaIncubacion: Date)   returns Incubaciones;
+                             fechaIncubacion: Date)                                                                                                     returns Incubaciones;
 
     // Registrar pelea rápida
     action   registrarPelea(aveId: String,
                             fecha: DateTime,
                             lugar: String,
                             resultado: String,
-                            observaciones: String)    returns Peleas;
+                            observaciones: String)                                                                                                      returns Peleas;
+
+    action   registrarCombate(ave_ID: String,
+                              combatienteATexto: String,
+                              combatienteB_ID: String,
+                              combatienteBTexto: String,
+                              ambosPropios: Boolean,
+                              fecha: String,
+                              tipoCombate: String,
+                              lugar: String,
+                              evento: String,
+                              nombreOponente: String,
+                              propietarioOponente: String,
+                              procedenciaOponente: String,
+                              resultado: String,
+                              metodoVictoria: String,
+                              premioDinero: Decimal,
+                              lesiones: String,
+                              observaciones: String)                                                                                                    returns Peleas;
+
+    action   prepararCargaVideoCombate(peleaId: String,
+                                       nombreArchivo: String,
+                                       mimeType: String,
+                                       tamanioBytes: Integer)                                                                                            returns {
+        success        : Boolean;
+        message        : String;
+        uploadUrl      : String;
+        videoUrl       : String;
+        storageProvider: String;
+        storageBucket  : String;
+        storageKey     : String;
+        estadoCarga    : String;
+    };
+
+    action   prepararCargaArchivoAve(aveId: String,
+                                     nombreArchivo: String,
+                                     mimeType: String,
+                                     tamanioBytes: Integer,
+                                     tipo: String)                                                                                                      returns {
+        success        : Boolean;
+        message        : String;
+        uploadUrl      : String;
+        fileUrl        : String;
+        storageProvider: String;
+        storageBucket  : String;
+        storageKey     : String;
+        nombreArchivo  : String;
+        mimeType       : String;
+        tipo           : String;
+    };
+
+    action   obtenerUrlLecturaS3(fileUrl: String)                                                                                                      returns {
+        success     : Boolean;
+        downloadUrl : String;
+    };
 
     // Generar reporte de ave
-    action   generarReporteAve(aveId: String)         returns LargeString; // PDF Base64
+    action   generarReporteAve(aveId: String)                                                                                                           returns LargeString; // PDF Base64
 
     // Sincronizar con SharePoint
-    action   sincronizarSharePoint(aveId: String)     returns Boolean;
+    action   sincronizarSharePoint(aveId: String)                                                                                                       returns Boolean;
 
-    action   login(email: String, password: String)   returns {
+    action   registrarUsuario(username: String, email: String, password: String, nombre: String, apellido: String, telefono: String, direccion: String) returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        rol       : String;
+        estado    : String;
+        telefono  : String;
+        direccion : String;
+    };
+
+    action   reenviarActivacion(email: String)                                                                                                          returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   login(email: String, password: String)                                                                                                     returns {
+        success  : Boolean;
         token    : String;
         username : String;
         email    : String;
@@ -230,8 +332,166 @@ service AveCombatienteService {
         userId   : String;
     };
 
-    action   logout()                                 returns {
+    action   logout()                                                                                                                                   returns {
         success : Boolean;
         message : String;
     };
+
+    action   obtenerPerfil()                                                                                                                            returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+    };
+
+    action   actualizarPerfil(username: String,
+                              email: String,
+                              nombre: String,
+                              apellido: String,
+                              telefono: String,
+                              direccion: String)                                                                                                        returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+    };
+
+    action   cambiarPassword(passwordActual: String,
+                             passwordNuevo: String)                                                                                                     returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   registrarRoles(codigo: String, nombre: String, descripcion: String, permisos: String, activo: Boolean)                                     returns {
+        success     : Boolean;
+        codigo      : String;
+        nombre      : String;
+        descripcion : String;
+        activo      : String;
+    };
+
+    action   solicitarRecuperacionPassword(email: String)                                                                                               returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   restablecerPassword(token: String,
+                                 newPassword: String)                                                                                                   returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   obtenerSuscripcionActual()                                                                                                                 returns {
+        tieneSuscripcion  : Boolean;
+        ID                 : UUID;
+        plan               : String;
+        estado             : String;
+        fechaInicio        : Date;
+        fechaFin           : Date;
+        diasRestantes      : Integer;
+        maxAves            : Integer;
+        maxPollitos        : Integer;
+        maxIncubaciones    : Integer;
+        precioMensual      : Decimal(10, 2);
+        moneda             : String;
+        totalAves          : Integer;
+        totalPollitos      : Integer;
+        totalIncubaciones  : Integer;
+        porcentajeUsoAves  : Decimal(5, 2);
+        mensaje            : String;
+    };
+
+    action   activarSuscripcion(plan: String,
+                                meses: Integer)                                                                                                        returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   crearCheckoutMercadoPago(plan: String)                                                                                                    returns {
+        success          : Boolean;
+        message          : String;
+        initPoint        : String;
+        sandboxInitPoint : String;
+        preapprovalId    : String;
+    };
+
+    action   cancelarSuscripcion()                                                                                                                     returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   obtenerDashboard()                                                                                                                         returns {
+        totalAves               : Integer;
+        totalIncubaciones       : Integer;
+        incubacionesActivas     : Integer;
+        incubacionesProgramadas : Integer;
+        totalAvesActivas        : Integer;
+        totalNacidos            : Integer;
+        alertaIncubaciones      : String;
+        alertaEclosion          : String;
+        incubacionesRecientes   : many {
+            ID              : UUID;
+            codigo          : String;
+            estado          : String;
+            fechaIncubacion : Timestamp;
+        };
+        totalLineas             : Integer;
+        totalCombates           : Integer;
+    };
+
+    action   analizarCrucePorParentesco(macho_ID: UUID,
+                                        hembra_ID: UUID,
+                                        tipoParentesco: String)                                                                                         returns {
+        nivelRiesgo   : String;
+        porcentaje    : Decimal(5, 2);
+        descripcion   : String;
+        recomendacion : String;
+        state         : String;
+        messageType   : String;
+    };
+
+    action   analizarCruceAutomatico(macho_ID: UUID,
+                                     hembra_ID: UUID,
+                                     generaciones: Integer,
+                                     linea_ID: UUID)                                                                                                    returns {
+        tipoCruce        : String;
+        tipoParentesco   : String;
+        nivelRiesgo      : String;
+        porcentaje       : Decimal(5, 2);
+        descripcion      : String;
+        recomendacion    : String;
+        decision         : String;
+        state            : String;
+        messageType      : String;
+        ancestrosComunes : LargeString;
+    };
+
+    action   obtenerLineaCruceAbierto()                                                                                                                 returns {
+        lineaId : String;
+    };
+
+    action   eliminarLineaAve(lineaAveId: String)                                                                                                                 returns {
+        success : Boolean;
+        message : String;
+    };   
+
+    action   eliminarIncubacion(incubacionId: String)                                                                                                                 returns {
+        success : Boolean;
+        message : String;
+    };
+
 }
