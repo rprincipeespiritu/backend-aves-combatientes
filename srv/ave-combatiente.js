@@ -807,12 +807,23 @@ module.exports = cds.service.impl(async function () {
 
     await db.run(INSERT.into(Usuario).entries(nuevoUsuario));
     // Enviar correo de activación
-    await enviarCorreoActivacion(emailNormalizado, tokenActivacion);
+    let correoActivacionEnviado = true;
+    let mensajeCorreoActivacion = "";
+    try {
+      await enviarCorreoActivacion(emailNormalizado, tokenActivacion);
+    } catch (mailError) {
+      correoActivacionEnviado = false;
+      mensajeCorreoActivacion = obtenerMensajeErrorCorreo(mailError);
+      console.error("Error enviando correo de activacion:", mailError);
+    }
 
     return {
       success: true,
-      message:
-        "Usuario registrado correctamente. Revisa tu correo para activar tu cuenta.",
+      message: correoActivacionEnviado
+        ? "Usuario registrado correctamente. Revisa tu correo para activar tu cuenta."
+        : "Usuario registrado correctamente, pero no se pudo enviar el correo de activacion. Intenta reenviar la activacion cuando el servicio de correo este disponible.",
+      correoActivacionEnviado,
+      mensajeCorreoActivacion,
       userId: nuevoUsuario.ID,
       username: nuevoUsuario.username,
       nombre: nuevoUsuario.nombre,
@@ -3156,6 +3167,12 @@ module.exports = cds.service.impl(async function () {
 
     const [response] = await sgMail.send(msg);
     console.log("SendGrid status:", response.statusCode);
+  }
+
+  function obtenerMensajeErrorCorreo(error) {
+    const mensajeSendGrid = error?.response?.body?.errors?.[0]?.message;
+    if (mensajeSendGrid) return mensajeSendGrid;
+    return error?.message || "No se pudo enviar el correo";
   }
 
   async function construirArbolGenealogico(aveId, generaciones) {
