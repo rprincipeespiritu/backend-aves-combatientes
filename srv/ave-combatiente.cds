@@ -472,6 +472,11 @@ service AveCombatienteService {
         tipoParentesco   : String;
         nivelRiesgo      : String;
         porcentaje       : Decimal(5, 2);
+        porcentajeMachoLinaje      : Decimal(5, 2);
+        porcentajeHembraLinaje     : Decimal(5, 2);
+        porcentajeLinajeProyectado : Decimal(5, 2);
+        porcentajeMinimoLinaje     : Decimal(5, 2);
+        cumplePorcentajeLinaje     : Boolean;
         descripcion      : String;
         recomendacion    : String;
         decision         : String;
