@@ -35,6 +35,7 @@ const AWS_S3_ENV_PREFIX = String(process.env.AWS_S3_ENV_PREFIX || "dev")
   .trim()
   .replace(/^\/+|\/+$/g, "");
 const LINEA_CRUCE_ABIERTO_NOMBRE = "Cruce abierto";
+const PORCENTAJE_MINIMO_CONTINUIDAD_LINEA = 25;
 const s3Client = new S3Client({ region: AWS_S3_REGION });
 
 const nodemailer = require("nodemailer");
@@ -1651,7 +1652,19 @@ module.exports = cds.service.impl(async function () {
     const candidataSolicitada = candidatas.find((linea) => linea.ID === lineaSolicitada.ID);
 
     if (candidataSolicitada) {
-      return { linea: candidataSolicitada, cruceAbierto: false };
+      const porcentajeProyectado = Number((candidataSolicitada.porcentajeTotal / 2).toFixed(2));
+      if (porcentajeProyectado < PORCENTAJE_MINIMO_CONTINUIDAD_LINEA) {
+        return req.reject(
+          400,
+          `La descendencia proyectada tendria ${porcentajeProyectado}% de ${lineaSolicitada.nombre}. Se requiere al menos ${PORCENTAJE_MINIMO_CONTINUIDAD_LINEA}% para continuar trabajando este linaje.`,
+        );
+      }
+
+      return {
+        linea: candidataSolicitada,
+        cruceAbierto: false,
+        porcentajeProyectado,
+      };
     }
 
     return req.reject(
@@ -3439,12 +3452,21 @@ module.exports = cds.service.impl(async function () {
       tipoParentesco,
       porcentajeConsanguinidad: porcentaje,
     });
+    const resumenComposicion = await obtenerResumenComposicionCruce(machoId, hembraId, lineaId);
+    const porcentajeLinajeProyectado = Number((
+      (resumenComposicion.porcentajeMachoLinea + resumenComposicion.porcentajeHembraLinea) / 2
+    ).toFixed(2));
 
     return {
       tipoCruce,
       tipoParentesco,
       nivelRiesgo: clasificacion.nivelRiesgo,
       porcentaje,
+      porcentajeMachoLinaje: resumenComposicion.porcentajeMachoLinea,
+      porcentajeHembraLinaje: resumenComposicion.porcentajeHembraLinea,
+      porcentajeLinajeProyectado,
+      porcentajeMinimoLinaje: PORCENTAJE_MINIMO_CONTINUIDAD_LINEA,
+      cumplePorcentajeLinaje: !lineaId || porcentajeLinajeProyectado >= PORCENTAJE_MINIMO_CONTINUIDAD_LINEA,
       descripcion: describirParentesco(tipoParentesco),
       recomendacion: clasificacion.recomendacion,
       decision: clasificacion.decision,
@@ -3916,7 +3938,11 @@ module.exports = cds.service.impl(async function () {
     }
 
     try {
-      return await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5, linea_ID || null);
+      const resultado = await analizarParentescoAutomatico(macho_ID, hembra_ID, generaciones || 5, linea_ID || null);
+      if (linea_ID && await esLineaCruceAbierto(linea_ID, req.jwtUser?.id)) {
+        resultado.cumplePorcentajeLinaje = true;
+      }
+      return resultado;
     } catch (error) {
       return req.reject(400, error.message);
     }
