@@ -1476,6 +1476,29 @@ module.exports = cds.service.impl(async function () {
     return normalizados.sort((a, b) => b.porcentaje - a.porcentaje);
   }
 
+  async function obtenerLineasFundadasPorAve(aveId) {
+    if (!aveId) return [];
+
+    const [comoFundador, comoFundadora] = await Promise.all([
+      SELECT.from(LineasAves).columns("ID").where({
+        aveFundador_ID: aveId,
+        estado: { "!=": "ELIMINADO" },
+      }),
+      SELECT.from(LineasAves).columns("ID").where({
+        aveFundadora_ID: aveId,
+        estado: { "!=": "ELIMINADO" },
+      }),
+    ]);
+
+    return Array.from(
+      new Set(
+        [...comoFundador, ...comoFundadora]
+          .map((linea) => linea.ID)
+          .filter(Boolean),
+      ),
+    );
+  }
+
   async function recalcularComposicionLineaAve(aveId) {
     if (!aveId) return;
 
@@ -1489,12 +1512,21 @@ module.exports = cds.service.impl(async function () {
     const mapa = new Map();
     const composicionPadre = await obtenerComposicionBaseAve(ave.padre_ID);
     const composicionMadre = await obtenerComposicionBaseAve(ave.madre_ID);
+    const lineasFundadas = await obtenerLineasFundadasPorAve(aveId);
 
     if (composicionPadre.length || composicionMadre.length) {
       if (composicionPadre.length) acumularComposicionLinea(mapa, composicionPadre, 0.5);
       if (composicionMadre.length) acumularComposicionLinea(mapa, composicionMadre, 0.5);
     } else if (ave.linea_ID) {
       mapa.set(ave.linea_ID, 100);
+    }
+
+    const porcentajeFundacional = ave.padre_ID || ave.madre_ID ? 50 : 100;
+    for (const lineaId of lineasFundadas) {
+      mapa.set(
+        lineaId,
+        Math.max(Number(mapa.get(lineaId) || 0), porcentajeFundacional),
+      );
     }
 
     const composicion = normalizarComposicionLinea(mapa);
@@ -1852,10 +1884,26 @@ module.exports = cds.service.impl(async function () {
   }
 
   // Validar datos de ave antes de crear
+  function validarFechaFallecimiento(req, data) {
+    if (data.estado !== "FALLECIDO") {
+      req.data.fechaFallecimiento = null;
+      return;
+    }
+
+    if (!data.fechaFallecimiento) {
+      return req.error(400, "La fecha de fallecimiento es requerida");
+    }
+
+    if (new Date(data.fechaFallecimiento) > new Date()) {
+      return req.error(400, "La fecha de fallecimiento no puede ser futura");
+    }
+  }
+
   this.before("CREATE", "Aves", async (req) => {
     const { fechaNacimiento, padre, madre } = req.data;
 
     await validarIdentificacionPollito(req, req.data);
+    validarFechaFallecimiento(req, req.data);
     const { placa } = req.data;
 
     if (!placa) {
@@ -1894,6 +1942,7 @@ module.exports = cds.service.impl(async function () {
     const dataCompleta = { ...(actual || {}), ...req.data };
 
     await validarIdentificacionPollito(req, dataCompleta, aveId);
+    validarFechaFallecimiento(req, dataCompleta);
 
     if (dataCompleta.etapaVida === "POLLITO") {
       req.data.cintillo = dataCompleta.cintillo;
@@ -2912,6 +2961,28 @@ module.exports = cds.service.impl(async function () {
       console.log(`Ave creada: ${data.placa}`);
     } catch (error) {
       console.error("Error creando carpeta SharePoint:", error);
+    }
+  });
+
+  // Mantener actualizada la composicion de los fundadores del linaje.
+  this.after(["CREATE", "UPDATE"], "LineasAves", async (data, req) => {
+    try {
+      const lineaId = data?.ID || req.params?.[0]?.ID;
+      if (!lineaId) return;
+
+      const linea = await SELECT.one
+        .from(LineasAves)
+        .columns("aveFundador_ID", "aveFundadora_ID")
+        .where({ ID: lineaId });
+
+      const fundadores = [linea?.aveFundador_ID, linea?.aveFundadora_ID].filter(
+        Boolean,
+      );
+      await Promise.all(
+        fundadores.map((aveId) => recalcularComposicionLineaAve(aveId)),
+      );
+    } catch (error) {
+      console.error("Error recalculando la composicion de los fundadores:", error);
     }
   });
 
