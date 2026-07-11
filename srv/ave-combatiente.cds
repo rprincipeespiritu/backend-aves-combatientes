@@ -7,6 +7,18 @@ using ave.combatiente from '../db/schema';
 @path: '/api/avecombatiente'
 service AveCombatienteService {
 
+    type ReprogramacionDetalleIncubacion {
+        ID             : UUID;
+        padre_ID       : UUID;
+        madre_ID       : UUID;
+        planCruce_ID   : UUID;
+        tipoParentesco : String;
+        nivelRiesgo    : String;
+        porcentaje     : Decimal;
+        totalHuevos    : Integer;
+        usuario_ID     : UUID;
+    };
+
     //========================================
     // ENTIDADES PRINCIPALES
     //========================================
@@ -63,6 +75,11 @@ service AveCombatienteService {
                              observacion: String) returns String;
 
             action cancelar(observacion: String)  returns String;
+            action reprogramar(fechaIncubacion: DateTime,
+                              fechaPreNacimiento: DateTime,
+                              fechaEclosion: DateTime,
+                              observaciones: String,
+                              detalles: array of ReprogramacionDetalleIncubacion) returns String;
         };
 
     entity IncubacionDetalles  as projection on combatiente.IncubacionDetalle;
