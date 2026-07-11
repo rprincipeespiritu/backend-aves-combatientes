@@ -49,7 +49,7 @@ const PERMISOS_ROL = {
     Crias: ["READ", "CREATE", "UPDATE", "DELETE"],
     Pesajes: ["READ", "CREATE", "UPDATE", "DELETE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
-    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar"],
+    Incubaciones: ["READ", "CREATE", "UPDATE", "DELETE", "iniciar", "finalizar", "cancelar", "reprogramar"],
     EvaluacionesAves: ["READ", "CREATE", "UPDATE", "DELETE"],
     EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE", "DELETE"],
@@ -76,7 +76,7 @@ const PERMISOS_ROL = {
     Crias: ["READ", "CREATE", "UPDATE"],
     Pesajes: ["READ", "CREATE", "UPDATE"],
     Peleas: ["READ", "CREATE", "UPDATE", "DELETE"],
-    Incubaciones: ["READ", "CREATE", "UPDATE"],
+    Incubaciones: ["READ", "CREATE", "UPDATE", "reprogramar"],
     EvaluacionesAves: ["READ", "CREATE", "UPDATE"],
     EvaluacionesPleito: ["READ", "CREATE", "UPDATE", "DELETE"],
     LineasAves: ["READ", "CREATE", "UPDATE"],
@@ -2290,6 +2290,20 @@ module.exports = cds.service.impl(async function () {
         data.fechaEclosion = eco.toISOString();
       }
     }
+
+    if (req.event === "UPDATE" && data.estado === "PROGRAMADA") {
+      const incubacionId = req.params?.[0]?.ID;
+      if (incubacionId) {
+        const actual = await SELECT.one
+          .from(Incubaciones)
+          .where({ ID: incubacionId });
+
+        if (actual?.estado === "CANCELADA") {
+          data.motivoCancelacion = data.motivoCancelacion ?? null;
+          data.fechaFinIncubacion = data.fechaFinIncubacion ?? null;
+        }
+      }
+    }
   });
 
   this.on("iniciar", "Incubaciones", async (req) => {
@@ -2418,6 +2432,162 @@ module.exports = cds.service.impl(async function () {
     );
 
     return "Incubación cancelada correctamente";
+  });
+
+  async function aplicarDetallesReprogramacion(req, db, incubacionId, detalles = []) {
+    const { IncubacionDetalle } = cds.entities("ave.combatiente");
+    const usuarioId = req.jwtUser?.id;
+
+    if (!Array.isArray(detalles) || detalles.length === 0) {
+      return req.error(400, "Debe incluir al menos un detalle de incubación");
+    }
+
+    await validarDetallesUnicosEnPayload(req, detalles);
+
+    const existentes = await db.run(
+      SELECT.from(IncubacionDetalle).where({ incubacion_ID: incubacionId }),
+    );
+    const idsMantener = new Set();
+
+    for (const detalle of detalles) {
+      if (!detalle.padre_ID || !detalle.madre_ID) {
+        return req.error(400, "Cada detalle debe tener padre y madre");
+      }
+
+      const totalHuevos = Number(detalle.totalHuevos || 0);
+      if (totalHuevos < 0) {
+        return req.error(400, "El total de huevos no puede ser negativo");
+      }
+
+      const detalleData = {
+        incubacion_ID: incubacionId,
+        padre_ID: detalle.padre_ID,
+        madre_ID: detalle.madre_ID,
+        planCruce_ID: detalle.planCruce_ID || null,
+        tipoParentesco: detalle.tipoParentesco || null,
+        nivelRiesgo: detalle.nivelRiesgo || null,
+        porcentaje:
+          detalle.porcentaje === undefined || detalle.porcentaje === null
+            ? null
+            : Number(detalle.porcentaje),
+        totalHuevos,
+        huevosFertiles: 0,
+        huevosEclosionados: 0,
+        huevosNoEclosionados: 0,
+        usuario_ID: detalle.usuario_ID || usuarioId,
+      };
+
+      if (detalle.padre_ID && detalle.madre_ID && !detalle.tipoParentesco) {
+        try {
+          const analisis = await analizarParentescoAutomatico(
+            detalle.padre_ID,
+            detalle.madre_ID,
+            5,
+          );
+          detalleData.tipoParentesco = analisis.tipoParentesco;
+          detalleData.nivelRiesgo = analisis.nivelRiesgo;
+          detalleData.porcentaje = analisis.porcentaje;
+        } catch (error) {
+          return req.error(400, error.message);
+        }
+      }
+
+      if (detalle.ID && existentes.some((item) => item.ID === detalle.ID)) {
+        await db.run(
+          UPDATE(IncubacionDetalle)
+            .set(detalleData)
+            .where({ ID: detalle.ID }),
+        );
+        idsMantener.add(detalle.ID);
+      } else {
+        const insertado = await db.run(
+          INSERT.into(IncubacionDetalle).entries(detalleData),
+        );
+        const nuevoId = insertado?.ID || insertado?.[0]?.ID;
+        if (nuevoId) {
+          idsMantener.add(nuevoId);
+        }
+      }
+    }
+
+    for (const existente of existentes) {
+      if (!idsMantener.has(existente.ID)) {
+        await db.run(
+          DELETE.from(IncubacionDetalle).where({ ID: existente.ID }),
+        );
+      }
+    }
+  }
+
+  this.on("reprogramar", "Incubaciones", async (req) => {
+    const db = await cds.connect.to("db");
+    const { Incubacion } = cds.entities("ave.combatiente");
+
+    const id = req.params[0]?.ID;
+    const {
+      fechaIncubacion,
+      fechaPreNacimiento,
+      fechaEclosion,
+      observaciones,
+      detalles,
+    } = req.data;
+
+    const incubacion = await db.run(
+      SELECT.one.from(Incubacion).where({ ID: id }),
+    );
+
+    if (!incubacion) {
+      return req.error(404, "Incubación no encontrada");
+    }
+
+    if (incubacion.estado !== "CANCELADA") {
+      return req.error(
+        400,
+        "Solo se puede reprogramar una incubación cancelada",
+      );
+    }
+
+    if (!fechaIncubacion) {
+      return req.error(400, "Debe indicar la nueva fecha de incubación");
+    }
+
+    const fInc = new Date(fechaIncubacion);
+    if (isNaN(fInc.getTime())) {
+      return req.error(400, "La fecha de incubación no es válida");
+    }
+
+    const fPre = fechaPreNacimiento
+      ? new Date(fechaPreNacimiento)
+      : new Date(fInc);
+    if (!fechaPreNacimiento) {
+      fPre.setDate(fPre.getDate() + 18);
+    }
+
+    const fEco = fechaEclosion ? new Date(fechaEclosion) : new Date(fInc);
+    if (!fechaEclosion) {
+      fEco.setDate(fEco.getDate() + 21);
+    }
+
+    await aplicarDetallesReprogramacion(req, db, id, detalles);
+
+    await db.run(
+      UPDATE(Incubacion)
+        .set({
+          estado: "PROGRAMADA",
+          motivoCancelacion: null,
+          fechaIncubacion: fInc.toISOString(),
+          fechaPreNacimiento: fPre.toISOString(),
+          fechaEclosion: fEco.toISOString(),
+          fechaFinIncubacion: null,
+          observaciones:
+            observaciones === undefined
+              ? incubacion.observaciones
+              : observaciones,
+        })
+        .where({ ID: id }),
+    );
+
+    return "Incubación reprogramada correctamente";
   });
 
   // Validar pesaje
