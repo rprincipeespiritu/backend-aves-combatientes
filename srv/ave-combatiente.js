@@ -1390,9 +1390,9 @@ module.exports = cds.service.impl(async function () {
     if (!data.temporada || data.temporada < 2000 || data.temporada > 2100) {
       return req.reject(400, "La temporada debe ser un anio valido");
     }
-    if (data.padre_ID && data.madre_ID && data.padre_ID === data.madre_ID) {
-      return req.reject(400, "El padre y la madre no pueden ser la misma ave");
-    }
+
+    const errorPadres = await validarRelacionPadres(data, null, null);
+    if (errorPadres) return req.reject(400, errorPadres);
 
     const usuarioId = data.usuario_ID || req.jwtUser?.id;
     const existentes = await SELECT.from(Crias)
@@ -1409,6 +1409,41 @@ module.exports = cds.service.impl(async function () {
     if (duplicado) {
       return req.reject(409, `Ya existe una cria con cintillo ${data.cintillo}, color ${data.colorCintillo} y temporada ${data.temporada}`);
     }
+  }
+
+  async function validarRelacionPadres(data, aveId, placaAve) {
+    const padreId = data.padre_ID || data.padre?.ID || null;
+    const madreId = data.madre_ID || data.madre?.ID || null;
+
+    if (padreId && madreId && padreId === madreId) {
+      return "El padre y la madre no pueden ser la misma ave";
+    }
+
+    if (aveId) {
+      if (padreId && padreId === aveId) {
+        return "Un ave no puede ser su propio padre";
+      }
+      if (madreId && madreId === aveId) {
+        return "Un ave no puede ser su propia madre";
+      }
+    }
+
+    if (placaAve) {
+      if (padreId) {
+        const padre = await SELECT.one.from(Aves).columns("placa").where({ ID: padreId });
+        if (padre?.placa === placaAve) {
+          return "Un ave no puede ser su propio padre";
+        }
+      }
+      if (madreId) {
+        const madre = await SELECT.one.from(Aves).columns("placa").where({ ID: madreId });
+        if (madre?.placa === placaAve) {
+          return "Un ave no puede ser su propia madre";
+        }
+      }
+    }
+
+    return null;
   }
 
   async function obtenerComposicionBaseAve(aveId) {
@@ -1919,9 +1954,10 @@ module.exports = cds.service.impl(async function () {
       req.error(400, "La fecha de nacimiento no puede ser futura");
     }
 
-    // Validar que padre y madre no sean el mismo
-    if (padre && madre && padre.ID === madre.ID) {
-      req.error(400, "El padre y la madre no pueden ser la misma ave");
+    // Validar relación de padres
+    const errorPadres = await validarRelacionPadres(req.data, null, placa);
+    if (errorPadres) {
+      return req.error(400, errorPadres);
     }
 
     // Calcular edad si hay fecha de nacimiento
@@ -1941,6 +1977,18 @@ module.exports = cds.service.impl(async function () {
 
     await validarIdentificacionPollito(req, dataCompleta, aveId);
     validarFechaFallecimiento(req, dataCompleta);
+
+    const errorPadres = await validarRelacionPadres(
+      {
+        padre_ID: req.data.padre_ID !== undefined ? req.data.padre_ID : actual?.padre_ID,
+        madre_ID: req.data.madre_ID !== undefined ? req.data.madre_ID : actual?.madre_ID,
+      },
+      aveId,
+      dataCompleta.placa,
+    );
+    if (errorPadres) {
+      return req.reject(400, errorPadres);
+    }
 
     if (dataCompleta.etapaVida === "POLLITO") {
       req.data.cintillo = dataCompleta.cintillo;
