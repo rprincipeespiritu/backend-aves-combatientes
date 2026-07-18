@@ -28,6 +28,7 @@ const AWS_S3_PRESIGN_EXPIRES_SECONDS = Number(
   process.env.AWS_S3_PRESIGN_EXPIRES_SECONDS || 900,
 );
 const ARCHIVO_AVE_MAX_BYTES = Number(process.env.ARCHIVO_AVE_MAX_BYTES || 104857600);
+const FOTO_USUARIO_MAX_BYTES = Number(process.env.FOTO_USUARIO_MAX_BYTES || 5242880);
 const MAX_REGISTROS_COMBATES_POR_USUARIO = Number(
   process.env.MAX_REGISTROS_COMBATES_POR_USUARIO || 10,
 );
@@ -308,6 +309,30 @@ function construirMetadataArchivoAve({ aveId, usuarioId, nombreArchivo, mimeType
     mimeType,
     nombreArchivo: safeName,
     tipo,
+  };
+}
+
+function construirMetadataFotoUsuario({ usuarioId, nombreArchivo, mimeType }) {
+  const safeName = normalizarNombreArchivo(nombreArchivo || "foto.jpg");
+  const storageKey = construirStorageKeyS3(
+    "usuarios",
+    usuarioId || "sin-usuario",
+    "foto",
+    `${Date.now()}-${crypto.randomUUID()}-${safeName}`,
+  );
+  const bucket = AWS_S3_AVES_BUCKET || AWS_S3_BUCKET || "pendiente-configurar-bucket-s3";
+  const fileUrl = AWS_S3_AVES_BUCKET || AWS_S3_BUCKET
+    ? construirUrlS3(bucket, storageKey)
+    : `s3://${bucket}/${storageKey}`;
+
+  return {
+    storageProvider: "AWS_S3",
+    storageBucket: bucket,
+    storageKey,
+    fileUrl,
+    uploadUrl: null,
+    mimeType,
+    nombreArchivo: safeName,
   };
 }
 
@@ -905,6 +930,7 @@ module.exports = cds.service.impl(async function () {
         "estado",
         "nombre",
         "apellido",
+        "fotoUrl",
         "rol_ID",
       )
       .where({ email: email.trim().toLowerCase() });
@@ -969,6 +995,7 @@ module.exports = cds.service.impl(async function () {
       email: user.email,
       rol: rolNombre,
       userId: user.ID,
+      fotoUrl: user.fotoUrl || "",
     };
   });
 
@@ -990,6 +1017,7 @@ module.exports = cds.service.impl(async function () {
         "apellido",
         "telefono",
         "direccion",
+        "fotoUrl",
         "estado",
         "rol_ID",
       )
@@ -1015,6 +1043,7 @@ module.exports = cds.service.impl(async function () {
       email: user.email,
       telefono: user.telefono,
       direccion: user.direccion,
+      fotoUrl: user.fotoUrl || "",
       rol: rolNombre,
       estado: user.estado,
     };
@@ -1059,6 +1088,85 @@ module.exports = cds.service.impl(async function () {
     return {
       ...perfil,
       message: "Perfil actualizado correctamente",
+    };
+  });
+
+  this.on("prepararCargaFotoUsuario", async (req) => {
+    const { nombreArchivo, mimeType, tamanioBytes } = req.data;
+    const userId = req.jwtUser?.id;
+
+    if (!nombreArchivo || !mimeType) {
+      return req.reject(400, "Debe seleccionar una imagen valida.");
+    }
+
+    if (!String(mimeType).startsWith("image/")) {
+      return req.reject(400, "El archivo seleccionado no es una imagen valida.");
+    }
+
+    if (Number(tamanioBytes || 0) <= 0) {
+      return req.reject(400, "El archivo seleccionado no tiene contenido.");
+    }
+
+    if (Number(tamanioBytes) > FOTO_USUARIO_MAX_BYTES) {
+      return req.reject(400, "La imagen supera el tamano maximo permitido (5 MB).");
+    }
+
+    const metadata = construirMetadataFotoUsuario({
+      usuarioId: userId,
+      nombreArchivo,
+      mimeType,
+    });
+    metadata.uploadUrl = await crearUploadUrlS3({
+      bucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      mimeType: metadata.mimeType,
+    });
+
+    return {
+      success: true,
+      message: metadata.storageBucket && metadata.storageBucket !== "pendiente-configurar-bucket-s3"
+        ? "Foto preparada para carga en AWS S3."
+        : "Foto registrada en modo preparacion. Configura AWS_S3_AVES_BUCKET o AWS_S3_BUCKET para activar S3.",
+      uploadUrl: metadata.uploadUrl,
+      fileUrl: metadata.fileUrl,
+      storageProvider: metadata.storageProvider,
+      storageBucket: metadata.storageBucket,
+      storageKey: metadata.storageKey,
+      nombreArchivo: metadata.nombreArchivo,
+      mimeType: metadata.mimeType,
+    };
+  });
+
+  this.on("actualizarFotoPerfil", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+    const { fotoUrl } = req.data;
+
+    if (!fotoUrl) {
+      return req.reject(400, "Debe indicar la URL de la foto de perfil.");
+    }
+
+    await UPDATE("ave.combatiente.Usuario")
+      .set({ fotoUrl: String(fotoUrl).trim() })
+      .where({ ID: usuarioId });
+
+    const perfil = await obtenerUsuarioPerfil(usuarioId);
+    return {
+      ...perfil,
+      message: "Foto de perfil actualizada correctamente",
+    };
+  });
+
+  this.on("eliminarFotoPerfil", async (req) => {
+    const usuarioId = req.jwtUser?.id;
+
+    await UPDATE("ave.combatiente.Usuario")
+      .set({ fotoUrl: null })
+      .where({ ID: usuarioId });
+
+    const perfil = await obtenerUsuarioPerfil(usuarioId);
+    return {
+      ...perfil,
+      message: "Foto de perfil eliminada correctamente",
     };
   });
 

@@ -455,6 +455,7 @@ entity Usuario : cuid, managed {
     apellido             : String(200);
     telefono             : String(20);
     direccion            : String(300);
+    fotoUrl              : String(500);
 
     // Rol
     rol                  : Association to Rol;
