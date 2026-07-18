@@ -112,7 +112,29 @@ service AveCombatienteService {
     // USUARIOS Y SEGURIDAD
     //========================================
 
-    entity Usuarios            as projection on combatiente.Usuario;
+    entity Usuarios            as projection on combatiente.Usuario {
+        ID,
+        createdAt,
+        createdBy,
+        modifiedAt,
+        modifiedBy,
+        username,
+        email,
+        password,
+        nombre,
+        apellido,
+        telefono,
+        direccion,
+        fotoUrl,
+        rol,
+        estado,
+        tokenActivacion,
+        tokenExpiracion,
+        tokenRecuperacion,
+        tokenRecuperacionExp,
+        ultimoAcceso,
+        preferencias
+    };
     entity Suscripciones       as projection on combatiente.Suscripcion;
 
     entity Roles               as projection on combatiente.Rol;
@@ -366,6 +388,7 @@ service AveCombatienteService {
         direccion : String;
         rol       : String;
         estado    : String;
+        fotoUrl   : String;
     };
 
     action   actualizarPerfil(username: String,
@@ -385,6 +408,51 @@ service AveCombatienteService {
         direccion : String;
         rol       : String;
         estado    : String;
+        fotoUrl   : String;
+    };
+
+    action   prepararCargaFotoUsuario(nombreArchivo: String,
+                                      mimeType: String,
+                                      tamanioBytes: Integer)                                                                                            returns {
+        success        : Boolean;
+        message        : String;
+        uploadUrl      : String;
+        fileUrl        : String;
+        storageProvider: String;
+        storageBucket  : String;
+        storageKey     : String;
+        nombreArchivo  : String;
+        mimeType       : String;
+    };
+
+    action   actualizarFotoPerfil(fotoUrl: String)                                                                                                    returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+        fotoUrl   : String;
+    };
+
+    action   eliminarFotoPerfil()                                                                                                                     returns {
+        success   : Boolean;
+        message   : String;
+        userId    : String;
+        username  : String;
+        nombre    : String;
+        apellido  : String;
+        email     : String;
+        telefono  : String;
+        direccion : String;
+        rol       : String;
+        estado    : String;
+        fotoUrl   : String;
     };
 
     action   cambiarPassword(passwordActual: String,
