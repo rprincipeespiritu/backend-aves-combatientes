@@ -1640,6 +1640,55 @@ module.exports = cds.service.impl(async function () {
     );
   }
 
+  async function obtenerDetalleLineasFundadasPorAve(aveId) {
+    if (!aveId) return [];
+
+    const [comoFundador, comoFundadora] = await Promise.all([
+      SELECT.from(LineasAves).columns("ID", "nombre").where({
+        aveFundador_ID: aveId,
+        estado: { "!=": "ELIMINADO" },
+      }),
+      SELECT.from(LineasAves).columns("ID", "nombre").where({
+        aveFundadora_ID: aveId,
+        estado: { "!=": "ELIMINADO" },
+      }),
+    ]);
+
+    const mapa = new Map();
+    for (const linea of [...comoFundador, ...comoFundadora]) {
+      if (linea?.ID) mapa.set(linea.ID, linea);
+    }
+    return Array.from(mapa.values());
+  }
+
+  function resolverIdAsociacion(valor, nested) {
+    if (valor !== undefined) return valor;
+    if (nested !== undefined) return nested?.ID ?? nested ?? null;
+    return undefined;
+  }
+
+  async function validarExclusividadFundadoresLinea(req, fundadorId, fundadoraId, lineaIdActual) {
+    const ids = Array.from(new Set([fundadorId, fundadoraId].filter(Boolean)));
+    if (!ids.length) return;
+
+    for (const aveId of ids) {
+      const lineas = await obtenerDetalleLineasFundadasPorAve(aveId);
+      const conflicto = lineas.find((linea) => linea.ID !== lineaIdActual);
+      if (!conflicto) continue;
+
+      const ave = await SELECT.one
+        .from(Aves)
+        .columns("placa", "nombre")
+        .where({ ID: aveId });
+      const etiqueta = ave?.placa || ave?.nombre || aveId;
+
+      return req.reject(
+        400,
+        `El ave ${etiqueta} ya es padre/madre fundador(a) de la línea "${conflicto.nombre}". Un mismo ejemplar no puede fundar más de una línea; sí puede usarse como refresco de sangre o en cruces abiertos.`,
+      );
+    }
+  }
+
   async function recalcularComposicionLineaAve(aveId) {
     if (!aveId) return;
 
@@ -3288,6 +3337,30 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
+  // Un ave solo puede ser fundador/fundadora de una linea.
+  // Si puede usarse como refresco (outcross) o en cruces abiertos de otras lineas.
+  this.before(["CREATE", "UPDATE"], "LineasAves", async (req) => {
+    if (req.data?.estado === "ELIMINADO") return;
+
+    const lineaId = req.data?.ID || req.params?.[0]?.ID;
+    let fundadorId = resolverIdAsociacion(req.data?.aveFundador_ID, req.data?.aveFundador);
+    let fundadoraId = resolverIdAsociacion(req.data?.aveFundadora_ID, req.data?.aveFundadora);
+
+    if (req.event === "UPDATE" && lineaId) {
+      const actual = await SELECT.one
+        .from(LineasAves)
+        .columns("aveFundador_ID", "aveFundadora_ID", "estado")
+        .where({ ID: lineaId });
+
+      if (!actual || actual.estado === "ELIMINADO") return;
+
+      if (fundadorId === undefined) fundadorId = actual.aveFundador_ID;
+      if (fundadoraId === undefined) fundadoraId = actual.aveFundadora_ID;
+    }
+
+    await validarExclusividadFundadoresLinea(req, fundadorId, fundadoraId, lineaId);
+  });
+
   // Mantener actualizada la composicion de los fundadores del linaje.
   this.after(["CREATE", "UPDATE"], "LineasAves", async (data, req) => {
     try {
@@ -3805,23 +3878,55 @@ module.exports = cds.service.impl(async function () {
     else if (mapaMacho.get(hembra.ID)?.distancia === 2) tipoParentesco = "ABUELA_NIETO";
 
     const ancestrosComunes = [];
-    let porcentaje = ["PADRE_HIJA", "MADRE_HIJO"].includes(tipoParentesco) ? 25 : 0;
+    let porcentaje = 0;
+
+    const agregarContribucionConsanguinidad = (id, placa, nombre, distanciaMacho, distanciaHembra) => {
+      const contribucion = Math.pow(0.5, distanciaMacho + distanciaHembra + 1) * 100;
+      porcentaje += contribucion;
+      ancestrosComunes.push({
+        ID: id,
+        placa,
+        nombre,
+        distanciaMacho,
+        distanciaHembra,
+        contribucion: Number(contribucion.toFixed(2)),
+      });
+    };
+
+    // Si uno es ancestro directo del otro (padre/madre, abuelo/abuela, etc.).
+    const hembraEnLineaMacho = mapaMacho.get(hembra.ID);
+    if (hembraEnLineaMacho?.distancia > 0) {
+      agregarContribucionConsanguinidad(
+        hembra.ID,
+        hembra.placa,
+        hembra.nombre,
+        hembraEnLineaMacho.distancia,
+        0,
+      );
+    }
+    const machoEnLineaHembra = mapaHembra.get(macho.ID);
+    if (machoEnLineaHembra?.distancia > 0) {
+      agregarContribucionConsanguinidad(
+        macho.ID,
+        macho.placa,
+        macho.nombre,
+        0,
+        machoEnLineaHembra.distancia,
+      );
+    }
 
     for (const [id, ancestroMacho] of mapaMacho.entries()) {
       if (id === macho.ID || id === hembra.ID) continue;
       const ancestroHembra = mapaHembra.get(id);
       if (!ancestroHembra) continue;
 
-      const contribucion = Math.pow(0.5, ancestroMacho.distancia + ancestroHembra.distancia + 1) * 100;
-      porcentaje += contribucion;
-      ancestrosComunes.push({
-        ID: id,
-        placa: ancestroMacho.placa,
-        nombre: ancestroMacho.nombre,
-        distanciaMacho: ancestroMacho.distancia,
-        distanciaHembra: ancestroHembra.distancia,
-        contribucion: Number(contribucion.toFixed(2)),
-      });
+      agregarContribucionConsanguinidad(
+        id,
+        ancestroMacho.placa,
+        ancestroMacho.nombre,
+        ancestroMacho.distancia,
+        ancestroHembra.distancia,
+      );
     }
 
     if (tipoParentesco === "SIN_PARENTESCO" && ancestrosComunes.length) {
