@@ -1369,118 +1369,139 @@ module.exports = cds.service.impl(async function () {
   }
 
   this.on("crearCheckoutMercadoPago", async (req) => {
-    const usuarioId = req.jwtUser?.id;
-    if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
+    try {
+      const usuarioId = req.jwtUser?.id;
+      if (!usuarioId) return req.reject(401, "No se pudo identificar el usuario logueado.");
 
-    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-    if (!accessToken) {
-      return req.reject(500, "Falta configurar MERCADOPAGO_ACCESS_TOKEN en el backend.");
-    }
+      const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+      if (!accessToken) {
+        return req.reject(500, "Falta configurar MERCADOPAGO_ACCESS_TOKEN en el backend.");
+      }
 
-    const planData = getPlanConfig(req.data.plan);
-    if (!planData || planData.plan === "PRUEBA") {
-      return req.reject(400, "Debe seleccionar un plan pagado valido: BASICO, PRO o PREMIUM.");
-    }
+      const planData = getPlanConfig(req.data?.plan);
+      if (!planData || planData.plan === "PRUEBA") {
+        return req.reject(400, "Debe seleccionar un plan pagado valido: BASICO, PRO o PREMIUM.");
+      }
 
-    const usuario = await SELECT.one
-      .from(Usuario)
-      .columns("ID", "email", "nombre", "apellido")
-      .where({ ID: usuarioId });
+      const { Usuario: UsuarioDb } = cds.entities("ave.combatiente");
+      const usuario = await SELECT.one
+        .from(UsuarioDb)
+        .columns("ID", "email", "nombre", "apellido")
+        .where({ ID: usuarioId });
 
-    if (!usuario?.email) {
-      return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
-    }
+      if (!usuario?.email) {
+        return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
+      }
 
-    const { plan, config } = planData;
-    const actual = await obtenerSuscripcionUsuario(usuarioId);
-    const diasRestantes = actual ? calcularDiasRestantes(actual.fechaFin) : -1;
-    const accesoVigente = actual && ["ACTIVA", "CANCELADA"].includes(actual.estado) && diasRestantes >= 0;
+      const { plan, config } = planData;
+      const actual = await obtenerSuscripcionUsuario(usuarioId);
+      const diasRestantes = actual ? calcularDiasRestantes(actual.fechaFin) : -1;
+      const accesoVigente = actual && ["ACTIVA", "CANCELADA"].includes(actual.estado) && diasRestantes >= 0;
 
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";
-    const backendPublicUrl = obtenerUrlPublicaBackend();
-    const externalReference = `aves:${usuarioId}:${plan}:${crypto.randomUUID()}`;
-    const payload = {
-      reason: `Aves Combatientes - Plan ${plan}`,
-      external_reference: externalReference,
-      payer_email: usuario.email,
-      back_url: `${frontendUrl}#/suscripcion`,
-      auto_recurring: {
-        frequency: 1,
-        frequency_type: "months",
-        transaction_amount: Number(config.precioMensual),
-        currency_id: "PEN",
-      },
-      status: "pending",
-    };
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+      const backendPublicUrl = obtenerUrlPublicaBackend();
+      const externalReference = `aves:${usuarioId}:${plan}:${crypto.randomUUID()}`;
+      const payload = {
+        reason: `Aves Combatientes - Plan ${plan}`,
+        external_reference: externalReference,
+        payer_email: usuario.email,
+        back_url: `${frontendUrl}#/suscripcion`,
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: "months",
+          transaction_amount: Number(config.precioMensual),
+          currency_id: "PEN",
+        },
+        status: "pending",
+      };
 
-    if (backendPublicUrl) {
-      payload.notification_url = `${backendPublicUrl}/api/mercadopago/webhook`;
-    }
+      if (backendPublicUrl) {
+        payload.notification_url = `${backendPublicUrl}/api/mercadopago/webhook`;
+      }
 
-    const response = await fetch("https://api.mercadopago.com/preapproval", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
+      const response = await fetch("https://api.mercadopago.com/preapproval", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (!response.ok) {
-      console.error("Mercado Pago create preapproval error:", data);
-      return req.reject(502, data?.message || "Mercado Pago no pudo crear el checkout.");
-    }
+      let data = {};
+      try {
+        data = await response.json();
+      } catch (parseError) {
+        console.error("Mercado Pago response no JSON:", parseError);
+        return req.reject(502, "Mercado Pago devolvio una respuesta invalida.");
+      }
 
-    const mpFields = {
-      proveedorPago: "MERCADO_PAGO",
-      mercadoPagoPreapprovalId: data.id,
-      mercadoPagoExternalReference: externalReference,
-      mercadoPagoStatus: data.status || "pending",
-      mercadoPagoInitPoint: data.init_point,
-      mercadoPagoSandboxInitPoint: data.sandbox_init_point,
-      observaciones: accesoVigente
-        ? `Checkout Mercado Pago pendiente para plan ${plan}. Acceso actual preservado hasta autorizar el pago.`
-        : `Checkout Mercado Pago creado para plan ${plan}`,
-    };
+      if (!response.ok) {
+        console.error("Mercado Pago create preapproval error:", data);
+        const mpMessage =
+          (typeof data?.message === "string" && data.message) ||
+          (typeof data?.error === "string" && data.error) ||
+          "Mercado Pago no pudo crear el checkout.";
+        return req.reject(400, mpMessage);
+      }
 
-    if (accesoVigente) {
-      // No degradar a PENDIENTE ni cambiar plan hasta que MP autorice.
-      await UPDATE(Suscripciones)
-        .set(mpFields)
-        .where({ ID: actual.ID });
-    } else if (actual) {
-      await UPDATE(Suscripciones)
-        .set({
+      const mpFields = {
+        proveedorPago: "MERCADO_PAGO",
+        mercadoPagoPreapprovalId: data.id || null,
+        mercadoPagoExternalReference: externalReference,
+        mercadoPagoStatus: data.status || "pending",
+        mercadoPagoInitPoint: data.init_point || null,
+        mercadoPagoSandboxInitPoint: data.sandbox_init_point || null,
+        observaciones: accesoVigente
+          ? `Checkout Mercado Pago pendiente para plan ${plan}. Acceso actual preservado hasta autorizar el pago.`
+          : `Checkout Mercado Pago creado para plan ${plan}`,
+      };
+
+      if (accesoVigente) {
+        await UPDATE(Suscripciones)
+          .set(mpFields)
+          .where({ ID: actual.ID });
+      } else if (actual) {
+        await UPDATE(Suscripciones)
+          .set({
+            ...construirDatosSuscripcion(plan, "PENDIENTE"),
+            ...mpFields,
+          })
+          .where({ ID: actual.ID });
+      } else {
+        await INSERT.into(Suscripciones).entries({
+          ID: crypto.randomUUID(),
+          usuario_ID: usuarioId,
           ...construirDatosSuscripcion(plan, "PENDIENTE"),
           ...mpFields,
-        })
-        .where({ ID: actual.ID });
-    } else {
-      await INSERT.into(Suscripciones).entries({
-        ID: crypto.randomUUID(),
-        usuario_ID: usuarioId,
-        ...construirDatosSuscripcion(plan, "PENDIENTE"),
-        ...mpFields,
-      });
+        });
+      }
+
+      const sandbox = usarSandboxMercadoPago(accessToken);
+      const checkoutUrl = sandbox
+        ? (data.sandbox_init_point || data.init_point)
+        : (data.init_point || data.sandbox_init_point);
+
+      if (!checkoutUrl) {
+        return req.reject(502, "Mercado Pago no devolvio una URL de checkout.");
+      }
+
+      return {
+        success: true,
+        message: accesoVigente
+          ? "Te redirigiremos a Mercado Pago. Tu acceso actual se mantiene hasta confirmar el pago."
+          : "Checkout de Mercado Pago creado correctamente.",
+        checkoutUrl,
+        initPoint: data.init_point || null,
+        sandboxInitPoint: data.sandbox_init_point || null,
+        preapprovalId: data.id || null,
+        accesoPreservado: !!accesoVigente,
+      };
+    } catch (error) {
+      console.error("Error en crearCheckoutMercadoPago:", error);
+      if (error?.status || error?.code) throw error;
+      return req.reject(500, error?.message || "No se pudo crear el checkout de Mercado Pago.");
     }
-
-    const sandbox = usarSandboxMercadoPago(accessToken);
-    const checkoutUrl = sandbox
-      ? (data.sandbox_init_point || data.init_point)
-      : (data.init_point || data.sandbox_init_point);
-
-    return {
-      success: true,
-      message: accesoVigente
-        ? "Te redirigiremos a Mercado Pago. Tu acceso actual se mantiene hasta confirmar el pago."
-        : "Checkout de Mercado Pago creado correctamente.",
-      checkoutUrl,
-      initPoint: data.init_point,
-      sandboxInitPoint: data.sandbox_init_point,
-      preapprovalId: data.id,
-      accesoPreservado: !!accesoVigente,
-    };
   });
 
   this.on("cancelarSuscripcion", async (req) => {
