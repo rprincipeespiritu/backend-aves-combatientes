@@ -5,17 +5,45 @@ const crypto = require("crypto");
 const express = require("express");
 const { construirDatosSuscripcion, fechaISO, sumarDias, PLANES_SUSCRIPCION } = require("./srv/subscription-config");
 
-const corsOptions = {
-  origin: process.env.CORS_ORIGIN || "*",
-  allowedHeaders: ["Content-Type", "Authorization"],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  credentials: true,
-};
+function construirOpcionesCors() {
+  const rawOrigins = String(process.env.CORS_ORIGIN || "*")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+
+  const allowAll = rawOrigins.includes("*");
+  // Con credentials:true el navegador no acepta Access-Control-Allow-Origin: *
+  const useCredentials = !allowAll;
+
+  return {
+    origin(origin, callback) {
+      // Requests sin Origin (healthchecks, curl, webhooks server-to-server)
+      if (!origin) return callback(null, true);
+      if (allowAll) return callback(null, true);
+
+      const normalized = String(origin).replace(/\/$/, "");
+      if (rawOrigins.includes(normalized)) {
+        return callback(null, true);
+      }
+
+      console.warn(`CORS bloqueado para origin: ${origin}. Permitidos: ${rawOrigins.join(", ")}`);
+      return callback(new Error(`Origin no permitido por CORS: ${origin}`), false);
+    },
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials: useCredentials,
+    optionsSuccessStatus: 204,
+  };
+}
+
+const corsOptions = construirOpcionesCors();
 
 cds.on("bootstrap", (app) => {
-  const cors = require("cors");
   app.use(cors(corsOptions));
   app.options("*", cors(corsOptions));
+
+  // Healthcheck simple para Railway
+  app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
   app.post("/api/mercadopago/webhook", express.json({ type: "*/*" }), async (req, res) => {
     try {
