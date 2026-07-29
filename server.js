@@ -3,7 +3,7 @@ const cds = require("@sap/cds");
 const cors = require("cors");
 const crypto = require("crypto");
 const express = require("express");
-const { construirDatosSuscripcion, fechaISO, sumarDias } = require("./srv/subscription-config");
+const { construirDatosSuscripcion, fechaISO, sumarDias, PLANES_SUSCRIPCION } = require("./srv/subscription-config");
 
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || "*",
@@ -22,6 +22,15 @@ cds.on("bootstrap", (app) => {
       const signature = req.headers["x-signature"];
       const requestId = req.headers["x-request-id"];
       const dataId = req.query["data.id"] || req.body?.data?.id || req.query.id;
+      const requireSignature =
+        !!process.env.MERCADOPAGO_WEBHOOK_SECRET ||
+        String(process.env.MERCADOPAGO_REQUIRE_WEBHOOK_SIGNATURE || "").toLowerCase() === "true" ||
+        String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
+      if (requireSignature && !process.env.MERCADOPAGO_WEBHOOK_SECRET) {
+        console.error("Webhook Mercado Pago: falta MERCADOPAGO_WEBHOOK_SECRET en produccion.");
+        return res.status(500).json({ error: "Webhook no configurado" });
+      }
 
       if (process.env.MERCADOPAGO_WEBHOOK_SECRET && (!signature || !requestId || !dataId)) {
         return res.status(401).json({ error: "Faltan cabeceras de firma de Mercado Pago" });
@@ -45,7 +54,14 @@ cds.on("bootstrap", (app) => {
       }
 
       const topic = req.query.topic || req.query.type || req.body?.type || req.body?.topic;
-      if (!dataId || !["subscription_preapproval", "preapproval", "subscription"].includes(String(topic))) {
+      const topicStr = String(topic || "");
+
+      // Renovaciones/pagos: reconsultar preapproval asociado si llega un payment.
+      if (["payment", "subscription_authorized_payment"].includes(topicStr)) {
+        return res.status(200).json({ received: true, ignored: "payment-topic" });
+      }
+
+      if (!dataId || !["subscription_preapproval", "preapproval", "subscription"].includes(topicStr)) {
         return res.status(200).json({ received: true, ignored: true });
       }
 
@@ -90,16 +106,45 @@ cds.on("bootstrap", (app) => {
         cancelled: "CANCELADA",
         canceled: "CANCELADA",
       };
-      const estado = statusMap[preapproval.status] || "PENDIENTE";
-      const datosPlan = construirDatosSuscripcion(actual.plan, estado) || {};
+      const estadoMp = statusMap[preapproval.status] || "PENDIENTE";
+      const planDesdeRef = String(preapproval.external_reference || "").split(":")[2]?.toUpperCase();
+      const planFinal = PLANES_SUSCRIPCION[planDesdeRef] ? planDesdeRef : actual.plan;
+
+      const diasRestantesActual = actual.fechaFin
+        ? Math.ceil((new Date(actual.fechaFin) - new Date()) / (1000 * 60 * 60 * 24))
+        : -1;
+      const accesoVigente = ["ACTIVA", "CANCELADA"].includes(actual.estado) && diasRestantesActual >= 0;
+
+      // Si el pago sigue pendiente y el usuario ya tiene acceso, no degradar el plan.
+      if (estadoMp === "PENDIENTE" && accesoVigente) {
+        await db.run(
+          UPDATE(Suscripcion)
+            .set({
+              proveedorPago: "MERCADO_PAGO",
+              mercadoPagoPreapprovalId: preapproval.id,
+              mercadoPagoExternalReference: preapproval.external_reference || actual.mercadoPagoExternalReference,
+              mercadoPagoStatus: preapproval.status,
+              mercadoPagoInitPoint: preapproval.init_point || actual.mercadoPagoInitPoint,
+              mercadoPagoSandboxInitPoint: preapproval.sandbox_init_point || actual.mercadoPagoSandboxInitPoint,
+              observaciones: `Checkout Mercado Pago pendiente para plan ${planFinal}. Acceso actual preservado.`,
+            })
+            .where({ ID: actual.ID }),
+        );
+        return res.status(200).json({ received: true, preserved: true });
+      }
+
+      const datosPlan = construirDatosSuscripcion(planFinal, estadoMp) || {};
       const fechaInicio = preapproval.date_created ? new Date(preapproval.date_created) : new Date();
-      const fechaFin = preapproval.next_payment_date ? new Date(preapproval.next_payment_date) : sumarDias(fechaInicio, 30);
+      const fechaFin = preapproval.next_payment_date
+        ? new Date(preapproval.next_payment_date)
+        : sumarDias(fechaInicio, Number(PLANES_SUSCRIPCION[planFinal]?.dias || 30));
 
       await db.run(
         UPDATE(Suscripcion)
           .set({
             ...datosPlan,
-            estado,
+            plan: planFinal,
+            estado: estadoMp,
             fechaInicio: fechaISO(fechaInicio),
             fechaFin: fechaISO(fechaFin),
             proveedorPago: "MERCADO_PAGO",
@@ -108,7 +153,7 @@ cds.on("bootstrap", (app) => {
             mercadoPagoStatus: preapproval.status,
             mercadoPagoInitPoint: preapproval.init_point || actual.mercadoPagoInitPoint,
             mercadoPagoSandboxInitPoint: preapproval.sandbox_init_point || actual.mercadoPagoSandboxInitPoint,
-            fechaUltimoPago: estado === "ACTIVA" ? new Date() : actual.fechaUltimoPago,
+            fechaUltimoPago: estadoMp === "ACTIVA" ? new Date() : actual.fechaUltimoPago,
             observaciones: `Mercado Pago webhook: ${preapproval.status}`,
           })
           .where({ ID: actual.ID }),

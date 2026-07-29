@@ -22,21 +22,85 @@ File or Folder | Purpose
 
 ## Mercado Pago
 
-Para activar suscripciones reales configura estas variables en el ambiente del backend:
+### Variables de entorno (Railway / backend)
 
 ```env
-MERCADOPAGO_ACCESS_TOKEN=TEST-...
-MERCADOPAGO_WEBHOOK_SECRET=...
-FRONTEND_URL=http://localhost:8080/index.html
+# Obligatorio para cobrar
+MERCADOPAGO_ACCESS_TOKEN=APP_USR-...          # produccion (o TEST-... en sandbox)
+MERCADOPAGO_WEBHOOK_SECRET=...                # secret del webhook en MP
+MERCADOPAGO_ENV=production                    # sandbox | production
+
+# URLs publicas
+FRONTEND_URL=https://tu-frontend.up.railway.app/index.html
+BACKEND_PUBLIC_URL=https://tu-backend.up.railway.app
+CORS_ORIGIN=https://tu-frontend.up.railway.app
+
+# Opcional
+# ALLOW_MANUAL_PAID_PLANS=true                # solo para pruebas locales; NO usar en prd
+# MERCADOPAGO_REQUIRE_WEBHOOK_SIGNATURE=true
 ```
 
-En Mercado Pago registra esta URL de notificacion cuando el backend este publicado:
+### Flujo de la app
+
+1. El usuario elige un plan en `#/suscripcion` y pulsa **Suscribirse**.
+2. El frontend llama `crearCheckoutMercadoPago`.
+3. El backend crea una *preapproval* en Mercado Pago y devuelve `checkoutUrl`.
+4. El usuario paga/autoriza en Mercado Pago.
+5. Mercado Pago notifica `POST /api/mercadopago/webhook`.
+6. El backend deja la suscripcion en `ACTIVA` (o preserva el acceso vigente si el pago sigue pendiente).
+
+### Webhook a registrar en Mercado Pago
 
 ```text
-https://tu-dominio.com/api/mercadopago/webhook
+https://tu-backend.up.railway.app/api/mercadopago/webhook
 ```
 
+Eventos recomendados: `subscription_preapproval` / `preapproval` (suscripciones).
+
 El checkout se crea desde la accion `crearCheckoutMercadoPago` del servicio CAP. El webhook confirma el estado de la preaprobacion y actualiza la suscripcion local a `PENDIENTE`, `ACTIVA`, `VENCIDA` o `CANCELADA`.
+
+### Plan de configuracion (paso a paso)
+
+Ver seccion **"Plan Mercado Pago + Railway"** mas abajo, o el resumen entregado en el PR/chat de despliegue.
+
+## Plan Mercado Pago + Railway
+
+1. **Cuenta Mercado Pago**
+   - Crear aplicacion en [https://www.mercadopago.com.pe/developers](https://www.mercadopago.com.pe/developers)
+   - Activar **Suscripciones / Preapproval**
+   - Confirmar moneda `PEN`
+
+2. **Credenciales**
+   - Sandbox: Access Token `TEST-...`
+   - Produccion: Access Token `APP_USR-...`
+   - Copiar **Webhook secret** al configurar la URL de notificacion
+
+3. **Railway (backend `prd`)**
+   - Agregar las variables listadas arriba
+   - `BACKEND_PUBLIC_URL` = URL publica del servicio backend
+   - `FRONTEND_URL` = URL del frontend + `/index.html`
+   - `CORS_ORIGIN` = origen del frontend
+   - Redeploy tras guardar variables
+
+4. **Railway (frontend `prd`)**
+   - `API_BASE_URL` = URL del backend + `/api/avecombatiente` (segun `replace-config.js`)
+
+5. **Webhook en Mercado Pago**
+   - URL: `https://<backend>/api/mercadopago/webhook`
+   - Modo produccion cuando cobres real
+   - Guardar el secret en `MERCADOPAGO_WEBHOOK_SECRET`
+
+6. **Prueba sandbox**
+   - `MERCADOPAGO_ENV=sandbox` + token `TEST-...`
+   - Suscribirse desde la app con usuario de prueba MP
+   - Verificar webhook → estado `ACTIVA`
+   - Probar cancelacion
+
+7. **Go-live**
+   - Cambiar a token `APP_USR-...` y `MERCADOPAGO_ENV=production`
+   - NO poner `ALLOW_MANUAL_PAID_PLANS=true`
+   - Smoke test con un pago real de monto bajo / plan basico
+   - Monitorear logs del webhook en Railway
 
 ## Archivos en AWS S3
 

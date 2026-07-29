@@ -509,9 +509,11 @@ service AveCombatienteService {
     action   crearCheckoutMercadoPago(plan: String)                                                                                                    returns {
         success          : Boolean;
         message          : String;
+        checkoutUrl      : String;
         initPoint        : String;
         sandboxInitPoint : String;
         preapprovalId    : String;
+        accesoPreservado : Boolean;
     };
 
     action   cancelarSuscripcion()                                                                                                                     returns {
