@@ -1393,16 +1393,16 @@ module.exports = cds.service.impl(async function () {
         return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
       }
 
+
       const { plan, config } = planData;
       const actual = await obtenerSuscripcionUsuario(usuarioId);
       const diasRestantes = actual ? calcularDiasRestantes(actual.fechaFin) : -1;
       const accesoVigente = actual && ["ACTIVA", "CANCELADA"].includes(actual.estado) && diasRestantes >= 0;
-
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080/index.html";        
       const backendPublicUrl = obtenerUrlPublicaBackend();
       const externalReference = `aves:${usuarioId}:${plan}:${crypto.randomUUID()}`;
       const payload = {
-        reason: `Aves Combatientes - Plan ${plan}`,
+        reason: `LinajeGallo - Plan ${plan}`,
         external_reference: externalReference,
         payer_email: usuario.email,
         back_url: `${frontendUrl}#/suscripcion`,
@@ -3710,32 +3710,37 @@ module.exports = cds.service.impl(async function () {
   // FUNCIONES AUXILIARES
   //========================================  
 
+  function obtenerRemitenteCorreo() {
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
+    const fromName = process.env.SENDGRID_FROM_NAME || "LinajeGallo";
+    if (!fromEmail) {
+      throw new Error("Falta SENDGRID_FROM_EMAIL");
+    }
+    return { email: fromEmail, name: fromName };
+  }
+
   async function enviarCorreoActivacion(email, tokenActivacion) {
     const apiKey = process.env.SENDGRID_API_KEY;
-
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
     if (!apiKey) {
       throw new Error("Falta SENDGRID_API_KEY");
     }
 
-    if (!fromEmail) {
-      throw new Error("Falta SENDGRID_FROM_EMAIL");
-    }
-
+    const from = obtenerRemitenteCorreo();
     sgMail.setApiKey(apiKey);
 
     const linkActivacion = construirLinkActivacion(tokenActivacion);
 
     const msg = {
       to: email,
-      from: fromEmail,
-      subject: "Activa tu cuenta",
+      from,
+      subject: "Activa tu cuenta en LinajeGallo",
       html: `
-      <h2>Bienvenido</h2>
+      <h2>Bienvenido a LinajeGallo</h2>
       <p>Tu cuenta fue creada correctamente.</p>
       <p>Haz clic en el siguiente enlace para activarla:</p>
       <p><a href="${linkActivacion}">${linkActivacion}</a></p>
       <p>Este enlace vence en 24 horas.</p>
+      <p>Equipo LinajeGallo</p>
     `,
     };
 
@@ -4281,28 +4286,28 @@ module.exports = cds.service.impl(async function () {
 
   async function enviarCorreoRecuperacion(email, tokenRecuperacion) {
     const apiKey = process.env.SENDGRID_API_KEY;
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL;
     const frontendUrl =
       process.env.FRONTEND_URL || "http://localhost:8080/index.html";
 
     if (!apiKey) throw new Error("Falta SENDGRID_API_KEY");
-    if (!fromEmail) throw new Error("Falta SENDGRID_FROM_EMAIL");
 
+    const from = obtenerRemitenteCorreo();
     sgMail.setApiKey(apiKey);
 
     const link = `${frontendUrl}#/reset-password/${tokenRecuperacion}`;
 
     const msg = {
       to: email,
-      from: fromEmail,
-      subject: "Recupera tu contraseña",
+      from,
+      subject: "Recupera tu contraseña - LinajeGallo",
       html: `
-      <h2>Recuperación de contraseña</h2>
+      <h2>Recuperación de contraseña - LinajeGallo</h2>
       <p>Recibimos una solicitud para restablecer tu contraseña.</p>
       <p>Haz clic en el siguiente enlace:</p>
       <p><a href="${link}">${link}</a></p>
       <p>Este enlace vence en 1 hora.</p>
       <p>Si no solicitaste este cambio, ignora este correo.</p>
+      <p>Equipo LinajeGallo</p>
     `,
     };
 
