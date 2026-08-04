@@ -337,6 +337,16 @@ service AveCombatienteService {
         downloadUrl : String;
     };
 
+    action   obtenerUrlsLecturaS3(fileUrls: array of String)                                                                                           returns {
+        success   : Boolean;
+        expiresIn : Integer;
+        items     : array of {
+            fileUrl     : String;
+            downloadUrl : String;
+            error       : String;
+        };
+    };
+
     // Generar reporte de ave
     action   generarReporteAve(aveId: String)                                                                                                           returns LargeString; // PDF Base64
 
