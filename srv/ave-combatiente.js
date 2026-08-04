@@ -1810,6 +1810,128 @@ module.exports = cds.service.impl(async function () {
     }
   }
 
+  async function obtenerIdsLineasCruceAbierto() {
+    const lineas = await SELECT.from(LineasAves)
+      .columns("ID")
+      .where({
+        nombre: LINEA_CRUCE_ABIERTO_NOMBRE,
+        estado: { "!=": "ELIMINADO" },
+      });
+    return new Set((lineas || []).map((linea) => linea.ID).filter(Boolean));
+  }
+
+  /**
+   * Una línea nueva debe ser limpia: el fundador/fundadora y su ascendencia
+   * no pueden pertenecer (linea_ID, composición o fundación) a otras líneas.
+   */
+  async function validarFundadoresLineaLimpia(req, fundadorId, fundadoraId, lineaIdActual) {
+    const ids = Array.from(new Set([fundadorId, fundadoraId].filter(Boolean)));
+    if (!ids.length) return;
+
+    const MAX_GENERACIONES = 10;
+    const cruceAbiertoIds = await obtenerIdsLineasCruceAbierto();
+
+    for (const aveId of ids) {
+      const mapaAncestros = await construirMapaAncestros(aveId, MAX_GENERACIONES);
+      const ancestroIds = Array.from(mapaAncestros.keys());
+      if (!ancestroIds.length) continue;
+
+      const fundador = await SELECT.one
+        .from(Aves)
+        .columns("placa", "nombre")
+        .where({ ID: aveId });
+      const etiquetaFundador = fundador?.placa || fundador?.nombre || aveId;
+
+      const aves = await SELECT.from(Aves)
+        .columns("ID", "placa", "nombre", "linea_ID")
+        .where({ ID: { in: ancestroIds } });
+
+      for (const ancestro of aves || []) {
+        const lineaId = ancestro.linea_ID;
+        if (!lineaId) continue;
+        if (lineaIdActual && lineaId === lineaIdActual) continue;
+        if (cruceAbiertoIds.has(lineaId)) continue;
+
+        const linea = await SELECT.one
+          .from(LineasAves)
+          .columns("nombre", "estado")
+          .where({ ID: lineaId });
+        if (!linea || linea.estado === "ELIMINADO") continue;
+        if (linea.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) continue;
+
+        const etiquetaAncestro = ancestro.placa || ancestro.nombre || ancestro.ID;
+        const esMismo = ancestro.ID === aveId;
+        return req.reject(
+          400,
+          esMismo
+            ? `La nueva línea debe ser limpia. El ave ${etiquetaFundador} ya pertenece a la línea "${linea.nombre}".`
+            : `La nueva línea debe ser limpia. El ave ${etiquetaFundador} tiene en su ascendencia a ${etiquetaAncestro}, que pertenece a la línea "${linea.nombre}".`,
+        );
+      }
+
+      const composiciones = await SELECT.from(ComposicionesLineaAve)
+        .columns("ave_ID", "linea_ID", "porcentaje")
+        .where({ ave_ID: { in: ancestroIds } });
+
+      for (const comp of composiciones || []) {
+        if (Number(comp.porcentaje || 0) <= 0) continue;
+        if (lineaIdActual && comp.linea_ID === lineaIdActual) continue;
+        if (cruceAbiertoIds.has(comp.linea_ID)) continue;
+
+        const linea = await SELECT.one
+          .from(LineasAves)
+          .columns("nombre", "estado")
+          .where({ ID: comp.linea_ID });
+        if (!linea || linea.estado === "ELIMINADO") continue;
+        if (linea.nombre === LINEA_CRUCE_ABIERTO_NOMBRE) continue;
+
+        const ancestro = mapaAncestros.get(comp.ave_ID) || {};
+        const etiquetaAncestro = ancestro.placa || ancestro.nombre || comp.ave_ID;
+        const esMismo = comp.ave_ID === aveId;
+        return req.reject(
+          400,
+          esMismo
+            ? `La nueva línea debe ser limpia. El ave ${etiquetaFundador} ya tiene composición de la línea "${linea.nombre}".`
+            : `La nueva línea debe ser limpia. El ave ${etiquetaFundador} tiene en su ascendencia a ${etiquetaAncestro}, con composición de la línea "${linea.nombre}".`,
+        );
+      }
+
+      for (const ancestroId of ancestroIds) {
+        if (ancestroId === aveId) continue;
+        const lineasFundadas = await obtenerDetalleLineasFundadasPorAve(ancestroId);
+        const conflicto = lineasFundadas.find((linea) => linea.ID !== lineaIdActual);
+        if (!conflicto) continue;
+
+        const ancestro = mapaAncestros.get(ancestroId) || {};
+        const etiquetaAncestro = ancestro.placa || ancestro.nombre || ancestroId;
+        return req.reject(
+          400,
+          `La nueva línea debe ser limpia. El ave ${etiquetaFundador} tiene en su ascendencia a ${etiquetaAncestro}, fundador(a) de la línea "${conflicto.nombre}".`,
+        );
+      }
+    }
+  }
+
+  async function asignarComposicionFundadorPura(aveId, lineaId) {
+    if (!aveId || !lineaId) return;
+
+    const ave = await SELECT.one
+      .from(Aves)
+      .columns("ID", "usuario_ID")
+      .where({ ID: aveId });
+    if (!ave) return;
+
+    await DELETE.from(ComposicionesLineaAve).where({ ave_ID: aveId });
+    await INSERT.into(ComposicionesLineaAve).entries({
+      ID: crypto.randomUUID(),
+      ave_ID: aveId,
+      linea_ID: lineaId,
+      porcentaje: 100,
+      usuario_ID: ave.usuario_ID,
+    });
+    await UPDATE(Aves).set({ linea_ID: lineaId }).where({ ID: aveId });
+  }
+
   async function recalcularComposicionLineaAve(aveId) {
     if (!aveId) return;
 
@@ -1821,23 +1943,31 @@ module.exports = cds.service.impl(async function () {
     if (!ave) return;
 
     const mapa = new Map();
-    const composicionPadre = await obtenerComposicionBaseAve(ave.padre_ID);
-    const composicionMadre = await obtenerComposicionBaseAve(ave.madre_ID);
     const lineasFundadas = await obtenerLineasFundadasPorAve(aveId);
 
-    if (composicionPadre.length || composicionMadre.length) {
-      if (composicionPadre.length) acumularComposicionLinea(mapa, composicionPadre, 0.5);
-      if (composicionMadre.length) acumularComposicionLinea(mapa, composicionMadre, 0.5);
-    } else if (ave.linea_ID) {
-      mapa.set(ave.linea_ID, 100);
-    }
+    // Los fundadores definen la línea: siempre 100% de la línea que fundan.
+    if (lineasFundadas.length) {
+      if (lineasFundadas.length === 1) {
+        mapa.set(lineasFundadas[0], 100);
+        if (ave.linea_ID !== lineasFundadas[0]) {
+          await UPDATE(Aves).set({ linea_ID: lineasFundadas[0] }).where({ ID: aveId });
+        }
+      } else {
+        const pct = Number((100 / lineasFundadas.length).toFixed(2));
+        for (const lineaId of lineasFundadas) {
+          mapa.set(lineaId, pct);
+        }
+      }
+    } else {
+      const composicionPadre = await obtenerComposicionBaseAve(ave.padre_ID);
+      const composicionMadre = await obtenerComposicionBaseAve(ave.madre_ID);
 
-    const porcentajeFundacional = ave.padre_ID || ave.madre_ID ? 50 : 100;
-    for (const lineaId of lineasFundadas) {
-      mapa.set(
-        lineaId,
-        Math.max(Number(mapa.get(lineaId) || 0), porcentajeFundacional),
-      );
+      if (composicionPadre.length || composicionMadre.length) {
+        if (composicionPadre.length) acumularComposicionLinea(mapa, composicionPadre, 0.5);
+        if (composicionMadre.length) acumularComposicionLinea(mapa, composicionMadre, 0.5);
+      } else if (ave.linea_ID) {
+        mapa.set(ave.linea_ID, 100);
+      }
     }
 
     const composicion = normalizarComposicionLinea(mapa);
@@ -2085,6 +2215,21 @@ module.exports = cds.service.impl(async function () {
 
     const cria = await SELECT.one.from(Crias).where({ ID: criaId });
     if (!cria) return req.reject(404, "Cria no encontrada");
+
+    if (req.jwtUser?.id && cria.usuario_ID && cria.usuario_ID !== req.jwtUser.id) {
+      return req.reject(403, "No tienes permiso para eliminar esta cria.");
+    }
+
+    if (cria.estado === "ELIMINADO") {
+      return req.reject(400, "Esta cria ya está eliminada.");
+    }
+
+    if (cria.estado === "REGISTRADA_ADULTA" || cria.aveGenerada_ID) {
+      return req.reject(
+        409,
+        "No se puede eliminar el pollito porque ya fue registrado como ave adulta. Elimina o gestiona el ave generada primero.",
+      );
+    }
 
     await UPDATE(Crias).set({ estado: "ELIMINADO" }).where({ ID: criaId });
     return { success: true, message: "Cria eliminada correctamente" };
@@ -2438,6 +2583,12 @@ module.exports = cds.service.impl(async function () {
     req.data.codigo = asegurarPrefijoCodigoPlan(req.data.codigo, cruceAbierto);
   });
 
+  this.before("DELETE", PlanesCruces, async (req) => {
+    const planId = req.params?.[0]?.ID || req.data?.ID;
+    if (!planId) return req.reject(400, "No se pudo identificar el plan de cruce.");
+    await validarDependenciasEliminacionPlanCruce(req, planId);
+  });
+
   this.before("UPDATE", PlanesCruces, async (req) => {
     const planId = req.params?.[0]?.ID || req.data?.ID;
     if (!planId) return req.reject(400, "No se pudo identificar el plan de cruce.");
@@ -2448,7 +2599,10 @@ module.exports = cds.service.impl(async function () {
     }
 
     const dataCompleta = { ...actual, ...req.data };
-    if (dataCompleta.estado === "ELIMINADO") return;
+    if (dataCompleta.estado === "ELIMINADO") {
+      await validarDependenciasEliminacionPlanCruce(req, planId);
+      return;
+    }
 
     const { cruceAbierto, linea } = await validarPlanCruce(req, dataCompleta, planId);
     const analisis = await analizarParentescoAutomatico(
@@ -3215,6 +3369,11 @@ module.exports = cds.service.impl(async function () {
       req.error(404, "Combate no encontrado para el usuario actual.");
     }
 
+    if (req.event === "DELETE") {
+      await validarDependenciasEliminacionPelea(req, peleaId);
+      return;
+    }
+
     if (req.event !== "UPDATE") return;
 
     const camposActualizados = Object.keys(req.data || {}).filter((campo) => campo !== "ID");
@@ -3537,9 +3696,10 @@ module.exports = cds.service.impl(async function () {
     }
 
     await validarExclusividadFundadoresLinea(req, fundadorId, fundadoraId, lineaId);
+    await validarFundadoresLineaLimpia(req, fundadorId, fundadoraId, lineaId);
   });
 
-  // Mantener actualizada la composicion de los fundadores del linaje.
+  // Fundadores = 100% de la línea creada/actualizada (línea limpia).
   this.after(["CREATE", "UPDATE"], "LineasAves", async (data, req) => {
     try {
       const lineaId = data?.ID || req.params?.[0]?.ID;
@@ -3547,17 +3707,17 @@ module.exports = cds.service.impl(async function () {
 
       const linea = await SELECT.one
         .from(LineasAves)
-        .columns("aveFundador_ID", "aveFundadora_ID")
+        .columns("aveFundador_ID", "aveFundadora_ID", "estado")
         .where({ ID: lineaId });
 
-      const fundadores = [linea?.aveFundador_ID, linea?.aveFundadora_ID].filter(
-        Boolean,
-      );
+      if (!linea || linea.estado === "ELIMINADO") return;
+
+      const fundadores = [linea.aveFundador_ID, linea.aveFundadora_ID].filter(Boolean);
       await Promise.all(
-        fundadores.map((aveId) => recalcularComposicionLineaAve(aveId)),
+        fundadores.map((aveId) => asignarComposicionFundadorPura(aveId, lineaId)),
       );
     } catch (error) {
-      console.error("Error recalculando la composicion de los fundadores:", error);
+      console.error("Error asignando composicion 100% a fundadores:", error);
     }
   });
 
@@ -4241,6 +4401,236 @@ module.exports = cds.service.impl(async function () {
     };
   }
 
+  function formatearListaEtiquetas(items, max = 3) {
+    const etiquetas = (items || [])
+      .map((item) => item.placa || item.nombre || item.codigo || item.cintillo || item.ID)
+      .filter(Boolean);
+    if (!etiquetas.length) return "";
+    const visibles = etiquetas.slice(0, max);
+    return etiquetas.length > max
+      ? `${visibles.join(", ")} y ${etiquetas.length - max} más`
+      : visibles.join(", ");
+  }
+
+  async function validarDependenciasEliminacionPlanCruce(req, planId) {
+    if (!planId) return;
+
+    const detalles = await SELECT.from(IncubacionDetalles)
+      .columns("ID", "incubacion_ID")
+      .where({ planCruce_ID: planId });
+
+    if (!(detalles || []).length) return;
+
+    const incubacionIds = [
+      ...new Set((detalles || []).map((d) => d.incubacion_ID).filter(Boolean)),
+    ];
+
+    const incubacionesActivas = incubacionIds.length
+      ? await SELECT.from(Incubaciones)
+          .columns("ID", "codigo", "estado")
+          .where({
+            ID: { in: incubacionIds },
+            estado: { "not in": ["ELIMINADO", "CANCELADA"] },
+          })
+      : [];
+
+    if ((incubacionesActivas || []).length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el plan de cruce porque está usado en incubación(es): ${formatearListaEtiquetas(incubacionesActivas)}. Cancela o elimina esas incubaciones primero.`,
+      );
+    }
+  }
+
+  async function validarDependenciasEliminacionPelea(req, peleaId) {
+    if (!peleaId) return;
+
+    const transacciones = await SELECT.from(Transacciones)
+      .columns("ID")
+      .where({ pelea_ID: peleaId });
+
+    if ((transacciones || []).length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el combate porque tiene ${transacciones.length} transacción(es) asociada(s). Elimina esas transacciones primero.`,
+      );
+    }
+  }
+
+  async function validarDependenciasEliminacionIncubacion(req, incubacion) {
+    if (!incubacion?.ID) return;
+
+    if (incubacion.estado === "ELIMINADO") {
+      return req.reject(400, "La incubación ya está eliminada.");
+    }
+
+    if (incubacion.estado !== "CANCELADA") {
+      return req.reject(
+        409,
+        "Solo se puede eliminar una incubación en estado Cancelada. Cancélala primero desde el detalle.",
+      );
+    }
+
+    const avesAsociadas = await SELECT.from(Aves)
+      .columns("ID", "placa", "nombre")
+      .where({
+        incubacion_ID: incubacion.ID,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    if ((avesAsociadas || []).length) {
+      return req.reject(
+        409,
+        `No se puede eliminar la incubación porque hay aves asociadas: ${formatearListaEtiquetas(avesAsociadas)}. Reasigna esas aves primero.`,
+      );
+    }
+  }
+
+  async function validarDependenciasEliminacionAve(req, aveId) {
+    const [
+      hijosComoPadre,
+      hijosComoMadre,
+      criasComoPadre,
+      criasComoMadre,
+      lineasComoFundador,
+      lineasComoFundadora,
+      planesComoMacho,
+      planesComoHembra,
+    ] = await Promise.all([
+      SELECT.from(Aves)
+        .columns("ID", "placa", "nombre")
+        .where({ padre_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(Aves)
+        .columns("ID", "placa", "nombre")
+        .where({ madre_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(Crias)
+        .columns("ID", "cintillo", "nombre")
+        .where({ padre_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(Crias)
+        .columns("ID", "cintillo", "nombre")
+        .where({ madre_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(LineasAves)
+        .columns("ID", "nombre")
+        .where({ aveFundador_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(LineasAves)
+        .columns("ID", "nombre")
+        .where({ aveFundadora_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(PlanesCruces)
+        .columns("ID", "codigo")
+        .where({ macho_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+      SELECT.from(PlanesCruces)
+        .columns("ID", "codigo")
+        .where({ hembra_ID: aveId, estado: { "!=": "ELIMINADO" } }),
+    ]);
+
+    const hijos = [...(hijosComoPadre || []), ...(hijosComoMadre || [])];
+    if (hijos.length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el ave porque es padre/madre de: ${formatearListaEtiquetas(hijos)}. Reasigna o elimina esos registros primero.`,
+      );
+    }
+
+    const crias = [...(criasComoPadre || []), ...(criasComoMadre || [])].map((c) => ({
+      ...c,
+      placa: c.cintillo || c.nombre,
+    }));
+    if (crias.length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el ave porque tiene pollitos asociados: ${formatearListaEtiquetas(crias)}. Elimina o reasigna esos pollitos primero.`,
+      );
+    }
+
+    const lineas = [...(lineasComoFundador || []), ...(lineasComoFundadora || [])];
+    if (lineas.length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el ave porque es fundador(a) de la(s) línea(s): ${formatearListaEtiquetas(lineas)}. Elimina o cambia los fundadores de esas líneas primero.`,
+      );
+    }
+
+    const planes = [...(planesComoMacho || []), ...(planesComoHembra || [])];
+    if (planes.length) {
+      return req.reject(
+        409,
+        `No se puede eliminar el ave porque participa en plan(es) de cruce: ${formatearListaEtiquetas(planes)}. Elimina esos planes primero.`,
+      );
+    }
+  }
+
+  async function validarDependenciasEliminacionLinea(req, linea) {
+    const lineaId = linea.ID;
+    const fundadores = new Set(
+      [linea.aveFundador_ID, linea.aveFundadora_ID].filter(Boolean),
+    );
+
+    const planes = await SELECT.from(PlanesCruces)
+      .columns("ID", "codigo")
+      .where({
+        linea_ID: lineaId,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    if ((planes || []).length) {
+      return req.reject(
+        409,
+        `No se puede eliminar la línea porque tiene plan(es) de cruce asociado(s): ${formatearListaEtiquetas(planes)}. Elimina esos planes primero.`,
+      );
+    }
+
+    const avesAsociadas = await SELECT.from(Aves)
+      .columns("ID", "placa", "nombre")
+      .where({
+        linea_ID: lineaId,
+        estado: { "!=": "ELIMINADO" },
+      });
+
+    const avesExternas = (avesAsociadas || []).filter((ave) => !fundadores.has(ave.ID));
+    if (avesExternas.length) {
+      return req.reject(
+        409,
+        `No se puede eliminar la línea porque hay aves asociadas: ${formatearListaEtiquetas(avesExternas)}. Reasigna esas aves a otra línea o elimínalas primero.`,
+      );
+    }
+
+    const composiciones = await SELECT.from(ComposicionesLineaAve)
+      .columns("ave_ID", "porcentaje")
+      .where({ linea_ID: lineaId });
+
+    const aveIdsExternos = [
+      ...new Set(
+        (composiciones || [])
+          .filter((c) => Number(c.porcentaje || 0) > 0 && !fundadores.has(c.ave_ID))
+          .map((c) => c.ave_ID)
+          .filter(Boolean),
+      ),
+    ];
+
+    if (aveIdsExternos.length) {
+      const avesConComposicion = await SELECT.from(Aves)
+        .columns("ID", "placa", "nombre")
+        .where({
+          ID: { in: aveIdsExternos },
+          estado: { "!=": "ELIMINADO" },
+        });
+
+      if ((avesConComposicion || []).length) {
+        return req.reject(
+          409,
+          `No se puede eliminar la línea porque hay aves con composición de esta línea: ${formatearListaEtiquetas(avesConComposicion)}. Actualiza la composición de esas aves primero.`,
+        );
+      }
+    }
+  }
+
+  async function limpiarReferenciasPropiasLinea(lineaId) {
+    await DELETE.from(ComposicionesLineaAve).where({ linea_ID: lineaId });
+    await UPDATE(Aves)
+      .set({ linea_ID: null })
+      .where({ linea_ID: lineaId });
+  }
+
   this.on("eliminarAve", async (req) => {
     try {
       console.log("BODY:", req.data);
@@ -4257,6 +4647,12 @@ module.exports = cds.service.impl(async function () {
         return req.reject(404, "Ave no encontrada");
       }
 
+      if (ave.estado === "ELIMINADO") {
+        return req.reject(400, "El ave ya está eliminada.");
+      }
+
+      await validarDependenciasEliminacionAve(req, aveId);
+
       await UPDATE(Aves)
         .set({
           estado: "ELIMINADO",
@@ -4269,6 +4665,7 @@ module.exports = cds.service.impl(async function () {
       };
     } catch (error) {
       console.error("ERROR BACKEND:", error);
+      if (error?.status || error?.code) throw error;
       return req.reject(500, error.message);
     }
   });
@@ -4283,13 +4680,22 @@ module.exports = cds.service.impl(async function () {
         return req.reject(400, "El ID es obligatorio");
       }
 
-      const ave = await SELECT.one.from(LineaAves).where({ ID: lineaAveId });
+      const linea = await SELECT.one.from(LineasAves).where({ ID: lineaAveId });
 
-      if (!ave) {
+      if (!linea) {
         return req.reject(404, "Línea de ave no encontrada");
       }
 
-      await UPDATE(LineaAves)
+      if (linea.estado === "ELIMINADO") {
+        return req.reject(400, "La línea ya está eliminada.");
+      }
+
+      await validarDependenciasEliminacionLinea(req, linea);
+
+      // Limpia solo referencias propias de la línea (fundadores / composición fundacional).
+      await limpiarReferenciasPropiasLinea(lineaAveId);
+
+      await UPDATE(LineasAves)
         .set({
           estado: "ELIMINADO",
         })
@@ -4301,6 +4707,7 @@ module.exports = cds.service.impl(async function () {
       };
     } catch (error) {
       console.error("ERROR BACKEND:", error);
+      if (error?.status || error?.code) throw error;
       return req.reject(500, error.message);
     }
   });
@@ -4315,11 +4722,17 @@ module.exports = cds.service.impl(async function () {
         return req.reject(400, "El ID es obligatorio");
       }
 
-      const ave = await SELECT.one.from(Incubaciones).where({ ID: incubacionId });
+      const incubacion = await SELECT.one.from(Incubaciones).where({ ID: incubacionId });
 
-      if (!ave) {
+      if (!incubacion) {
         return req.reject(404, "Incubación no encontrada");
       }
+
+      if (req.jwtUser?.id && incubacion.usuario_ID && incubacion.usuario_ID !== req.jwtUser.id) {
+        return req.reject(403, "No tienes permiso para eliminar esta incubación.");
+      }
+
+      await validarDependenciasEliminacionIncubacion(req, incubacion);
 
       await UPDATE(Incubaciones)
         .set({
@@ -4333,6 +4746,7 @@ module.exports = cds.service.impl(async function () {
       };
     } catch (error) {
       console.error("ERROR BACKEND:", error);
+      if (error?.status || error?.code) throw error;
       return req.reject(500, error.message);
     }
   });
