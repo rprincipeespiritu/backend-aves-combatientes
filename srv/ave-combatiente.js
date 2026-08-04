@@ -13,6 +13,11 @@ const {
   getPlanConfig,
   sumarDias,
 } = require("./subscription-config");
+const {
+  invalidarCacheSuscripcion,
+  leerCacheSuscripcion,
+  guardarCacheSuscripcion,
+} = require("./suscripcion-cache");
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
@@ -469,7 +474,7 @@ module.exports = cds.service.impl(async function () {
       return req.reject(401, "No se pudo identificar el usuario actual.");
     }
 
-    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId, req);
     const diasRestantes = suscripcion ? calcularDiasRestantes(suscripcion.fechaFin) : 0;
     const tienePremium =
       suscripcion &&
@@ -483,13 +488,29 @@ module.exports = cds.service.impl(async function () {
     }
   }
 
-  async function obtenerSuscripcionUsuario(usuarioId) {
+  async function obtenerSuscripcionUsuario(usuarioId, req) {
+    if (!usuarioId) return null;
+
+    if (req && Object.prototype.hasOwnProperty.call(req, "_suscripcionCache")) {
+      return req._suscripcionCache;
+    }
+
+    const cachedValue = leerCacheSuscripcion(usuarioId);
+    if (cachedValue !== undefined) {
+      if (req) req._suscripcionCache = cachedValue;
+      return cachedValue;
+    }
+
     const suscripciones = await SELECT
       .from(Suscripciones)
       .where({ usuario_ID: usuarioId })
       .orderBy("createdAt desc");
 
-    if (!suscripciones.length) return null;
+    if (!suscripciones.length) {
+      if (req) req._suscripcionCache = null;
+      guardarCacheSuscripcion(usuarioId, null);
+      return null;
+    }
 
     const suscripcion = suscripciones[0];
     const diasRestantes = calcularDiasRestantes(suscripcion.fechaFin);
@@ -506,6 +527,9 @@ module.exports = cds.service.impl(async function () {
         .where({ ID: suscripcion.ID });
       suscripcion.estado = "VENCIDA";
     }
+
+    if (req) req._suscripcionCache = suscripcion;
+    guardarCacheSuscripcion(usuarioId, suscripcion);
 
     return suscripcion;
   }
@@ -525,7 +549,7 @@ module.exports = cds.service.impl(async function () {
     if (accionesSuscripcion.includes(req.event)) return;
 
     const esLectura = req.event === "READ" || req.event === "obtenerDashboard";
-    const suscripcion = await obtenerSuscripcionUsuario(usuarioId);
+    const suscripcion = await obtenerSuscripcionUsuario(usuarioId, req);
 
     if (!suscripcion) {
       if (!esLectura) {
@@ -1325,6 +1349,8 @@ module.exports = cds.service.impl(async function () {
       });
     }
 
+    invalidarCacheSuscripcion(usuarioId);
+
     return {
       success: true,
       message: `Suscripcion ${plan} activada correctamente.`,
@@ -1410,6 +1436,8 @@ module.exports = cds.service.impl(async function () {
       });
     }
 
+    invalidarCacheSuscripcion(usuarioId);
+
     return {
       success: true,
       message: "Checkout de Mercado Pago creado correctamente.",
@@ -1448,6 +1476,8 @@ module.exports = cds.service.impl(async function () {
         observaciones: "Suscripcion cancelada por el usuario",
       })
       .where({ ID: actual.ID });
+
+    invalidarCacheSuscripcion(usuarioId);
 
     return {
       success: true,
@@ -3321,6 +3351,63 @@ module.exports = cds.service.impl(async function () {
     };
   });
 
+  this.on("obtenerUrlsLecturaS3", async (req) => {
+    await validarPlanPremiumMultimedia(req);
+
+    const MAX_URLS = 100;
+    const raw = req.data?.fileUrls;
+    const fileUrls = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+      .map((url) => String(url || "").trim())
+      .filter(Boolean);
+
+    if (!fileUrls.length) {
+      return {
+        success: true,
+        expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+        items: [],
+      };
+    }
+
+    if (fileUrls.length > MAX_URLS) {
+      return req.reject(400, `Maximo ${MAX_URLS} URLs por solicitud.`);
+    }
+
+    const unicas = [...new Set(fileUrls)];
+    const firmadas = await Promise.all(
+      unicas.map(async (fileUrl) => {
+        try {
+          const objeto = obtenerObjetoDesdeUrlS3(fileUrl);
+          if (!objeto) {
+            return {
+              fileUrl,
+              downloadUrl: "",
+              error: "La URL no pertenece a un bucket S3 configurado.",
+            };
+          }
+
+          const downloadUrl = await crearDownloadUrlS3(objeto);
+          return {
+            fileUrl,
+            downloadUrl: downloadUrl || "",
+            error: downloadUrl ? "" : "No se pudo firmar la URL.",
+          };
+        } catch (error) {
+          return {
+            fileUrl,
+            downloadUrl: "",
+            error: error?.message || "Error al firmar la URL.",
+          };
+        }
+      }),
+    );
+
+    return {
+      success: true,
+      expiresIn: AWS_S3_PRESIGN_EXPIRES_SECONDS,
+      items: firmadas,
+    };
+  });
+
   //========================================
   // AFTER - PROCESAMIENTO POST-OPERACIÓN
   //========================================
@@ -3383,46 +3470,124 @@ module.exports = cds.service.impl(async function () {
     }
   });
 
-  // Calcular estadísticas después de leer aves
-  this.after("READ", "Aves", async (aves) => {
+  function columnasSolicitadasAve(req) {
+    const cols = req?.query?.SELECT?.columns;
+    if (!Array.isArray(cols) || cols.length === 0) return null;
+
+    const names = new Set();
+    for (const col of cols) {
+      if (col === "*" || col?.ref?.[0] === "*") return null;
+      if (typeof col === "string") {
+        names.add(col);
+        continue;
+      }
+      if (Array.isArray(col?.ref) && col.ref.length) {
+        names.add(col.ref[col.ref.length - 1]);
+      }
+      if (col?.as) names.add(col.as);
+    }
+    return names;
+  }
+
+  function necesitaEnriquecimientoAve(req) {
+    const names = columnasSolicitadasAve(req);
+    if (!names) return true;
+    const campos = [
+      "edad",
+      "pesoActual",
+      "ultimaActualizacionPeso",
+      "totalPeleas",
+      "peleasGanadas",
+      "porcentajeVictorias",
+    ];
+    return campos.some((campo) => names.has(campo));
+  }
+
+  // Calcular estadísticas después de leer aves (batch, sin N+1)
+  this.after("READ", "Aves", async (aves, req) => {
     if (!aves) return;
+    if (!necesitaEnriquecimientoAve(req)) return;
 
     const avesArray = Array.isArray(aves) ? aves : [aves];
+    if (!avesArray.length) return;
 
-    for (const ave of avesArray) {
-      // Calcular edad actual
-      if (ave.fechaNacimiento && !ave.fechaFallecimiento) {
-        const hoy = new Date();
-        const nacimiento = new Date(ave.fechaNacimiento);
-        ave.edad = Math.floor(
-          (hoy - nacimiento) / (365.25 * 24 * 60 * 60 * 1000),
-        );
+    const names = columnasSolicitadasAve(req);
+    const necesitaEdad = !names || names.has("edad");
+    const necesitaPeso =
+      !names || names.has("pesoActual") || names.has("ultimaActualizacionPeso");
+    const necesitaPeleas =
+      !names ||
+      names.has("totalPeleas") ||
+      names.has("peleasGanadas") ||
+      names.has("porcentajeVictorias");
+
+    if (necesitaEdad) {
+      for (const ave of avesArray) {
+        if (ave.fechaNacimiento && !ave.fechaFallecimiento) {
+          const hoy = new Date();
+          const nacimiento = new Date(ave.fechaNacimiento);
+          ave.edad = Math.floor(
+            (hoy - nacimiento) / (365.25 * 24 * 60 * 60 * 1000),
+          );
+        }
+      }
+    }
+
+    const ids = avesArray.map((ave) => ave.ID).filter(Boolean);
+    if (!ids.length || (!necesitaPeso && !necesitaPeleas)) return;
+
+    const [pesajes, peleas] = await Promise.all([
+      necesitaPeso
+        ? SELECT.from(Pesajes)
+            .columns("ave_ID", "peso", "fecha")
+            .where({ ave_ID: { in: ids } })
+            .orderBy({ fecha: "desc" })
+        : Promise.resolve([]),
+      necesitaPeleas
+        ? SELECT.from(Peleas)
+            .columns("ave_ID", "resultado")
+            .where({ ave_ID: { in: ids } })
+        : Promise.resolve([]),
+    ]);
+
+    if (necesitaPeso) {
+      const ultimoPorAve = new Map();
+      for (const pesaje of pesajes || []) {
+        if (!ultimoPorAve.has(pesaje.ave_ID)) {
+          ultimoPorAve.set(pesaje.ave_ID, pesaje);
+        }
+      }
+      for (const ave of avesArray) {
+        const ultimoPesaje = ultimoPorAve.get(ave.ID);
+        if (ultimoPesaje) {
+          ave.pesoActual = ultimoPesaje.peso;
+          ave.ultimaActualizacionPeso = ultimoPesaje.fecha;
+        }
+      }
+    }
+
+    if (necesitaPeleas) {
+      const statsPorAve = new Map();
+      for (const pelea of peleas || []) {
+        let stats = statsPorAve.get(pelea.ave_ID);
+        if (!stats) {
+          stats = { total: 0, ganadas: 0 };
+          statsPorAve.set(pelea.ave_ID, stats);
+        }
+        stats.total += 1;
+        if (pelea.resultado === "VICTORIA") stats.ganadas += 1;
       }
 
-      // Obtener último peso
-      const ultimoPesaje = await SELECT.one
-        .from(Pesajes)
-        .where({ ave_ID: ave.ID })
-        .orderBy({ fecha: "desc" });
-
-      if (ultimoPesaje) {
-        ave.pesoActual = ultimoPesaje.peso;
-        ave.ultimaActualizacionPeso = ultimoPesaje.fecha;
-      }
-
-      // Contar peleas
-      const peleas = await SELECT.from(Peleas).where({ ave_ID: ave.ID });
-
-      ave.totalPeleas = peleas.length;
-      ave.peleasGanadas = peleas.filter(
-        (p) => p.resultado === "VICTORIA",
-      ).length;
-
-      if (ave.totalPeleas > 0) {
-        ave.porcentajeVictorias = (
-          (ave.peleasGanadas / ave.totalPeleas) *
-          100
-        ).toFixed(2);
+      for (const ave of avesArray) {
+        const stats = statsPorAve.get(ave.ID) || { total: 0, ganadas: 0 };
+        ave.totalPeleas = stats.total;
+        ave.peleasGanadas = stats.ganadas;
+        if (ave.totalPeleas > 0) {
+          ave.porcentajeVictorias = (
+            (ave.peleasGanadas / ave.totalPeleas) *
+            100
+          ).toFixed(2);
+        }
       }
     }
   });
@@ -3663,11 +3828,17 @@ module.exports = cds.service.impl(async function () {
     return error?.message || "No se pudo enviar el correo";
   }
 
-  async function construirArbolGenealogico(aveId, generaciones) {
-    if (generaciones <= 0) return null;
+  async function construirArbolGenealogico(aveId, generaciones, memo = new Map()) {
+    if (!aveId || generaciones <= 0) return null;
+
+    const memoKey = `${aveId}:${generaciones}`;
+    if (memo.has(memoKey)) return memo.get(memoKey);
 
     const ave = await SELECT.one.from(Aves).where({ ID: aveId });
-    if (!ave) return null;
+    if (!ave) {
+      memo.set(memoKey, null);
+      return null;
+    }
 
     const nodo = {
       id: ave.ID,
@@ -3679,20 +3850,18 @@ module.exports = cds.service.impl(async function () {
       madre: null,
     };
 
-    if (ave.padre_ID) {
-      nodo.padre = await construirArbolGenealogico(
-        ave.padre_ID,
-        generaciones - 1,
-      );
-    }
+    const [padre, madre] = await Promise.all([
+      ave.padre_ID
+        ? construirArbolGenealogico(ave.padre_ID, generaciones - 1, memo)
+        : Promise.resolve(null),
+      ave.madre_ID
+        ? construirArbolGenealogico(ave.madre_ID, generaciones - 1, memo)
+        : Promise.resolve(null),
+    ]);
 
-    if (ave.madre_ID) {
-      nodo.madre = await construirArbolGenealogico(
-        ave.madre_ID,
-        generaciones - 1,
-      );
-    }
-
+    nodo.padre = padre;
+    nodo.madre = madre;
+    memo.set(memoKey, nodo);
     return nodo;
   }
 
@@ -4237,88 +4406,93 @@ module.exports = cds.service.impl(async function () {
       return req.reject(401, "No se pudo identificar el usuario logueado.");
     }
 
-    const totalAves = await SELECT.from(Ave)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
-      })
-      .columns("count(*) as total");
+    const [
+      totalAves,
+      totalIncubaciones,
+      incubacionesActivas,
+      incubacionesProgramadas,
+      totalAvesActivas,
+      totalLineas,
+      planesActivos,
+      totalPollitos,
+      totalCombates,
+      totalNacidosRes,
+      recientes,
+    ] = await Promise.all([
+      SELECT.from(Ave)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total"),
+      SELECT.from(Incubacion)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total"),
+      SELECT.from(Incubacion)
+        .where({
+          usuario_ID: usuarioId,
+          estado: "EN_PROCESO",
+        })
+        .columns("count(*) as total"),
+      SELECT.from(Incubacion)
+        .where({
+          usuario_ID: usuarioId,
+          estado: "PROGRAMADA",
+        })
+        .columns("count(*) as total"),
+      SELECT.from(Ave)
+        .where({
+          usuario_ID: usuarioId,
+          estado: "ACTIVO",
+        })
+        .columns("count(*) as total"),
+      SELECT.from(LineaAve)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+          nombre: { "!=": "Cruce abierto" },
+        })
+        .columns("count(*) as total"),
+      SELECT.from(PlanesCruces)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("macho_ID", "hembra_ID"),
+      SELECT.from(Crias)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("count(*) as total"),
+      SELECT.from(Pelea)
+        .where({
+          usuario_ID: usuarioId,
+        })
+        .columns("count(*) as total"),
+      SELECT.from(IncubacionDetalle)
+        .where({
+          usuario_ID: usuarioId,
+        })
+        .columns("sum(huevosEclosionados) as total"),
+      SELECT.from(Incubacion)
+        .where({
+          usuario_ID: usuarioId,
+          estado: { "!=": "ELIMINADO" },
+        })
+        .columns("ID", "codigo", "estado", "fechaIncubacion")
+        .orderBy("createdAt desc")
+        .limit(5),
+    ]);
 
-    const totalIncubaciones = await SELECT.from(Incubacion)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
-      })
-      .columns("count(*) as total");
-
-    const incubacionesActivas = await SELECT.from(Incubacion)
-      .where({
-        usuario_ID: usuarioId,
-        estado: "EN_PROCESO"
-      })
-      .columns("count(*) as total");
-
-    const incubacionesProgramadas = await SELECT.from(Incubacion)
-      .where({
-        usuario_ID: usuarioId,
-        estado: "PROGRAMADA"
-      })
-      .columns("count(*) as total");
-
-    const totalAvesActivas = await SELECT.from(Ave)
-      .where({
-        usuario_ID: usuarioId,
-        estado: "ACTIVO"
-      })
-      .columns("count(*) as total");
-
-    const totalLineas = await SELECT.from(LineaAve)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" },
-        nombre: { "!=": "Cruce abierto" }
-      })
-      .columns("count(*) as total");
-
-    const planesActivos = await SELECT.from(PlanesCruces)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
-      })
-      .columns("macho_ID", "hembra_ID");
     const totalPlanes = new Set(
       (planesActivos || [])
         .filter((plan) => plan.macho_ID && plan.hembra_ID)
         .map((plan) => `${plan.macho_ID}|${plan.hembra_ID}`),
     ).size;
-
-    const totalPollitos = await SELECT.from(Crias)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
-      })
-      .columns("count(*) as total");
-
-    const totalCombates = await SELECT.from(Pelea)
-      .where({
-        usuario_ID: usuarioId
-      })
-      .columns("count(*) as total");
-
-    const totalNacidosRes = await SELECT.from(IncubacionDetalle)
-      .where({
-        usuario_ID: usuarioId
-      })
-      .columns("sum(huevosEclosionados) as total");
-
-    const recientes = await SELECT.from(Incubacion)
-      .where({
-        usuario_ID: usuarioId,
-        estado: { "!=": "ELIMINADO" }
-      })
-      .columns("ID", "codigo", "estado", "fechaIncubacion")
-      .orderBy("createdAt desc")
-      .limit(5);
 
     const iActivas = incubacionesActivas?.[0]?.total || 0;
     const iProgramadas = incubacionesProgramadas?.[0]?.total || 0;

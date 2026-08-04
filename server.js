@@ -5,6 +5,7 @@ const cors = require("cors");
 const crypto = require("crypto");
 const express = require("express");
 const { construirDatosSuscripcion, fechaISO, sumarDias } = require("./srv/subscription-config");
+const { invalidarCacheSuscripcion } = require("./srv/suscripcion-cache");
 
 const corsOptions = {
   origin: process.env.CORS_ORIGIN || "http://localhost:8080",
@@ -114,6 +115,7 @@ cds.on("bootstrap", (app) => {
           .where({ ID: actual.ID }),
       );
 
+      invalidarCacheSuscripcion(actual.usuario_ID);
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Error procesando webhook Mercado Pago:", error);
