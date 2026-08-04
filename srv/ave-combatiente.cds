@@ -516,7 +516,7 @@ service AveCombatienteService {
         message : String;
     };
 
-    action   crearCheckoutMercadoPago(plan: String)                                                                                                    returns {
+    action   crearCheckoutMercadoPago(plan: String, payerEmail: String)                                                                                returns {
         success          : Boolean;
         message          : String;
         checkoutUrl      : String;
@@ -524,6 +524,7 @@ service AveCombatienteService {
         sandboxInitPoint : String;
         preapprovalId    : String;
         accesoPreservado : Boolean;
+        payerEmail       : String;
     };
 
     action   cancelarSuscripcion()                                                                                                                     returns {
