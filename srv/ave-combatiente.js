@@ -1419,15 +1419,9 @@ module.exports = cds.service.impl(async function () {
         return req.reject(400, "Tu usuario debe tener un correo registrado para crear la suscripcion.");
       }
 
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      const payerEmail = String(req.data?.payerEmail || usuario.email || "")
-        .trim()
-        .toLowerCase();
-      if (!payerEmail || !emailRegex.test(payerEmail)) {
-        return req.reject(
-          400,
-          "Indica un e-mail valido de Mercado Pago. Debe ser el mismo con el que iniciarás sesión al pagar.",
-        );
+      const payerEmail = String(usuario.email || "").trim().toLowerCase();
+      if (!payerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payerEmail)) {
+        return req.reject(400, "Tu usuario debe tener un correo valido para crear la suscripcion.");
       }
 
       const { plan, config } = planData;
@@ -1440,7 +1434,7 @@ module.exports = cds.service.impl(async function () {
       const payload = {
         reason: `LinajeGallo - Plan ${plan}`,
         external_reference: externalReference,
-        // Mercado Pago exige que el comprador inicie sesión con este mismo e-mail.
+        // Mercado Pago exige el mismo e-mail al pagar (cuenta o solo tarjeta).
         payer_email: payerEmail,
         back_url: `${frontendUrl}#/suscripcion`,
         auto_recurring: {
@@ -1535,7 +1529,6 @@ module.exports = cds.service.impl(async function () {
         sandboxInitPoint: data.sandbox_init_point || null,
         preapprovalId: data.id || null,
         accesoPreservado: !!accesoVigente,
-        payerEmail,
       };
     } catch (error) {
       console.error("Error en crearCheckoutMercadoPago:", error);
