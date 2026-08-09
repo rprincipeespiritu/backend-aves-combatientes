@@ -1353,6 +1353,22 @@ module.exports = cds.service.impl(async function () {
 
     invalidarCacheSuscripcion(usuarioId);
 
+    if (plan === "PRUEBA") {
+      try {
+        const usuario = await SELECT.one
+          .from(Usuario)
+          .columns("ID", "username", "email", "nombre", "apellido", "telefono")
+          .where({ ID: usuarioId });
+        await enviarCorreoDuenoNuevaPrueba({
+          usuario,
+          fechaInicio: fechaISO(inicio),
+          fechaFin: fechaISO(fin),
+        });
+      } catch (mailError) {
+        console.error("No se pudo notificar al dueno sobre la nueva cuenta de prueba:", mailError);
+      }
+    }
+
     return {
       success: true,
       message: `Suscripcion ${plan} activada correctamente.`,
@@ -4807,6 +4823,54 @@ module.exports = cds.service.impl(async function () {
 
     const [response] = await sgMail.send(msg);
     console.log("SendGrid reset status:", response.statusCode);
+  }
+
+  function obtenerEmailsDuenoApp() {
+    const raw = String(process.env.APP_OWNER_EMAIL || process.env.OWNER_EMAIL || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+  }
+
+  async function enviarCorreoDuenoNuevaPrueba({ usuario, fechaInicio, fechaFin }) {
+    const destinatarios = obtenerEmailsDuenoApp();
+    if (!destinatarios.length) {
+      console.warn("APP_OWNER_EMAIL no configurado: se omite aviso de nueva cuenta de prueba.");
+      return;
+    }
+
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+      throw new Error("Falta SENDGRID_API_KEY");
+    }
+
+    const from = obtenerRemitenteCorreo();
+    sgMail.setApiKey(apiKey);
+
+    const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(" ") || "Sin nombre";
+    const msg = {
+      to: destinatarios,
+      from,
+      subject: `Nueva cuenta de prueba en LinajeGallo: ${nombreCompleto}`,
+      html: `
+      <h2>Nueva cuenta de prueba activada</h2>
+      <p>Un usuario activo el plan de prueba Premium por 60 dias.</p>
+      <ul>
+        <li><strong>Nombre:</strong> ${nombreCompleto}</li>
+        <li><strong>Usuario:</strong> ${usuario?.username || "-"}</li>
+        <li><strong>Email:</strong> ${usuario?.email || "-"}</li>
+        <li><strong>Telefono:</strong> ${usuario?.telefono || "-"}</li>
+        <li><strong>Inicio:</strong> ${fechaInicio || "-"}</li>
+        <li><strong>Fin:</strong> ${fechaFin || "-"}</li>
+      </ul>
+      <p>LinajeGallo</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid owner trial notify status:", response.statusCode);
   }
 
   this.on("obtenerDashboard", async (req) => {
