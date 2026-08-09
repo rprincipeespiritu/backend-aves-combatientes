@@ -20,6 +20,17 @@ File or Folder | Purpose
 - Start adding content, for example, a [db/schema.cds](db/schema.cds).
 
 
+## Notificacion al dueno
+
+Cuando un usuario activa el plan de prueba, el backend puede avisar al dueno de la app:
+
+```env
+APP_OWNER_EMAIL=tu-correo@ejemplo.com
+# Tambien acepta varios: correo1@ejemplo.com,correo2@ejemplo.com
+```
+
+Requiere `SENDGRID_API_KEY` y `SENDGRID_FROM_EMAIL` (mismo servicio de correo de activacion).
+
 ## Mercado Pago
 
 Para activar suscripciones reales configura estas variables en el ambiente del backend:
