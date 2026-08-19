@@ -31,6 +31,17 @@ APP_OWNER_EMAIL=tu-correo@ejemplo.com
 
 Requiere `SENDGRID_API_KEY` y `SENDGRID_FROM_EMAIL` (mismo servicio de correo de activacion).
 
+Las quejas y sugerencias del dashboard tambien se envian a `APP_OWNER_EMAIL`.
+
+Contacto visible en la app (telefono / WhatsApp):
+
+```env
+APP_CONTACT_PHONE=+51 999 999 999
+APP_CONTACT_WHATSAPP=51999999999
+```
+
+`APP_CONTACT_WHATSAPP` debe ir preferentemente solo con digitos (codigo de pais + numero) para el enlace `https://wa.me/...`.
+
 ## Mercado Pago
 
 Para activar suscripciones reales configura estas variables en el ambiente del backend:

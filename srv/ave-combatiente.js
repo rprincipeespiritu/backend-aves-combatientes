@@ -4873,6 +4873,132 @@ module.exports = cds.service.impl(async function () {
     console.log("SendGrid owner trial notify status:", response.statusCode);
   }
 
+  function obtenerDatosContactoEnv() {
+    const telefono = String(process.env.APP_CONTACT_PHONE || "").trim();
+    const whatsappRaw = String(process.env.APP_CONTACT_WHATSAPP || process.env.APP_CONTACT_PHONE || "").trim();
+    const whatsappDigits = whatsappRaw.replace(/[^\d]/g, "");
+    return {
+      telefono,
+      whatsapp: whatsappRaw,
+      whatsappUrl: whatsappDigits ? `https://wa.me/${whatsappDigits}` : "",
+    };
+  }
+
+  function escaparHtml(texto) {
+    return String(texto || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  async function enviarCorreoQuejaSugerencia({ tipo, mensaje, telefonoContacto, usuario }) {
+    const destinatarios = obtenerEmailsDuenoApp();
+    if (!destinatarios.length) {
+      throw new Error("APP_OWNER_EMAIL no configurado");
+    }
+
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+      throw new Error("Falta SENDGRID_API_KEY");
+    }
+
+    const from = obtenerRemitenteCorreo();
+    sgMail.setApiKey(apiKey);
+
+    const tipoNorm = String(tipo || "").toUpperCase() === "QUEJA" ? "Queja" : "Sugerencia";
+    const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(" ") || "Sin nombre";
+    const replyTo = usuario?.email || undefined;
+
+    const msg = {
+      to: destinatarios,
+      from,
+      ...(replyTo ? { replyTo } : {}),
+      subject: `[LinajeGallo] ${tipoNorm} de ${nombreCompleto}`,
+      html: `
+      <h2>${escaparHtml(tipoNorm)} recibida desde LinajeGallo</h2>
+      <ul>
+        <li><strong>Tipo:</strong> ${escaparHtml(tipoNorm)}</li>
+        <li><strong>Nombre:</strong> ${escaparHtml(nombreCompleto)}</li>
+        <li><strong>Usuario:</strong> ${escaparHtml(usuario?.username || "-")}</li>
+        <li><strong>Email:</strong> ${escaparHtml(usuario?.email || "-")}</li>
+        <li><strong>Telefono del usuario:</strong> ${escaparHtml(usuario?.telefono || "-")}</li>
+        <li><strong>Telefono de contacto indicado:</strong> ${escaparHtml(telefonoContacto || "-")}</li>
+      </ul>
+      <h3>Mensaje</h3>
+      <p style="white-space:pre-wrap">${escaparHtml(mensaje)}</p>
+      <p>LinajeGallo</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid queja/sugerencia status:", response.statusCode);
+  }
+
+  this.on("obtenerDatosContacto", async () => {
+    return obtenerDatosContactoEnv();
+  });
+
+  this.on("enviarQuejaSugerencia", async (req) => {
+    const usuarioId =
+      req.jwtUser?.ID ||
+      req.jwtUser?.id ||
+      req.user?.id;
+
+    if (!usuarioId) {
+      return req.reject(401, "Debes iniciar sesion para enviar una queja o sugerencia.");
+    }
+
+    const tipoRaw = String(req.data?.tipo || "").trim().toUpperCase();
+    const mensaje = String(req.data?.mensaje || "").trim();
+    const telefonoContacto = String(req.data?.telefonoContacto || "").trim();
+
+    if (!["QUEJA", "SUGERENCIA"].includes(tipoRaw)) {
+      return req.reject(400, "Selecciona si es una queja o una sugerencia.");
+    }
+
+    if (!mensaje || mensaje.length < 10) {
+      return req.reject(400, "El mensaje debe tener al menos 10 caracteres.");
+    }
+
+    if (mensaje.length > 2000) {
+      return req.reject(400, "El mensaje no puede superar 2000 caracteres.");
+    }
+
+    const { Usuario } = cds.entities("ave.combatiente");
+    const usuario = await SELECT.one
+      .from(Usuario)
+      .columns("ID", "username", "email", "nombre", "apellido", "telefono")
+      .where({ ID: usuarioId });
+
+    if (!usuario) {
+      return req.reject(404, "No se encontro el usuario de la sesion.");
+    }
+
+    try {
+      await enviarCorreoQuejaSugerencia({
+        tipo: tipoRaw,
+        mensaje,
+        telefonoContacto,
+        usuario,
+      });
+    } catch (error) {
+      console.error("Error enviando queja/sugerencia:", error);
+      return req.reject(
+        500,
+        error?.message?.includes("APP_OWNER_EMAIL")
+          ? "El canal de contacto no esta configurado. Intenta por WhatsApp o telefono."
+          : "No se pudo enviar el mensaje. Intenta nuevamente en unos minutos.",
+      );
+    }
+
+    return {
+      success: true,
+      message: "Tu mensaje fue enviado. Gracias por ayudarnos a mejorar LinajeGallo.",
+    };
+  });
+
   this.on("obtenerDashboard", async (req) => {
     const { Ave, Incubacion, IncubacionDetalle, LineaAve, Pelea } =
       cds.entities("ave.combatiente");
