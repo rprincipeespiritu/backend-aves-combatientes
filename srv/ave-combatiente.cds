@@ -596,4 +596,17 @@ service AveCombatienteService {
         message : String;
     };
 
+    action   obtenerDatosContacto()                                                                                                                   returns {
+        telefono    : String;
+        whatsapp    : String;
+        whatsappUrl : String;
+    };
+
+    action   enviarQuejaSugerencia(tipo: String,
+                                   mensaje: String,
+                                   telefonoContacto: String)                                                                                          returns {
+        success : Boolean;
+        message : String;
+    };
+
 }
