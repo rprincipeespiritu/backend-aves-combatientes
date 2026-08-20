@@ -22,7 +22,11 @@ File or Folder | Purpose
 
 ## Notificacion al dueno
 
-Cuando un usuario activa el plan de prueba, el backend puede avisar al dueno de la app:
+El backend avisa a `APP_OWNER_EMAIL` cuando:
+
+1. Se registra un **nuevo usuario**
+2. Un usuario activa el plan de **prueba**
+3. Llega una **queja o sugerencia**
 
 ```env
 APP_OWNER_EMAIL=tu-correo@ejemplo.com
@@ -30,8 +34,6 @@ APP_OWNER_EMAIL=tu-correo@ejemplo.com
 ```
 
 Requiere `SENDGRID_API_KEY` y `SENDGRID_FROM_EMAIL` (mismo servicio de correo de activacion).
-
-Las quejas y sugerencias del dashboard tambien se envian a `APP_OWNER_EMAIL`.
 
 Contacto visible en la app (telefono / WhatsApp):
 

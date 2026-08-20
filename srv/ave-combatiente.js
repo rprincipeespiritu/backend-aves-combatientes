@@ -869,6 +869,13 @@ module.exports = cds.service.impl(async function () {
       console.error("Error enviando correo de activacion:", mailError);
     }
 
+    // Aviso al dueño de la app (no bloquea el registro)
+    try {
+      await enviarCorreoDuenoNuevoUsuario({ usuario: nuevoUsuario });
+    } catch (ownerMailError) {
+      console.error("Error enviando aviso de nuevo usuario al dueno:", ownerMailError);
+    }
+
     return {
       success: true,
       message: correoActivacionEnviado
@@ -4965,6 +4972,46 @@ module.exports = cds.service.impl(async function () {
 
     const [response] = await sgMail.send(msg);
     console.log("SendGrid owner trial notify status:", response.statusCode);
+  }
+
+  async function enviarCorreoDuenoNuevoUsuario({ usuario }) {
+    const destinatarios = obtenerEmailsDuenoApp();
+    if (!destinatarios.length) {
+      console.warn("APP_OWNER_EMAIL no configurado: se omite aviso de nuevo usuario.");
+      return;
+    }
+
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+      throw new Error("Falta SENDGRID_API_KEY");
+    }
+
+    const from = obtenerRemitenteCorreo();
+    sgMail.setApiKey(apiKey);
+
+    const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(" ") || "Sin nombre";
+    const msg = {
+      to: destinatarios,
+      from,
+      ...(usuario?.email ? { replyTo: usuario.email } : {}),
+      subject: `Nuevo usuario registrado en LinajeGallo: ${nombreCompleto}`,
+      html: `
+      <h2>Nuevo usuario registrado</h2>
+      <p>Se creo una cuenta nueva en LinajeGallo (pendiente de activacion por correo).</p>
+      <ul>
+        <li><strong>Nombre:</strong> ${escaparHtml(nombreCompleto)}</li>
+        <li><strong>Usuario:</strong> ${escaparHtml(usuario?.username || "-")}</li>
+        <li><strong>Email:</strong> ${escaparHtml(usuario?.email || "-")}</li>
+        <li><strong>Telefono:</strong> ${escaparHtml(usuario?.telefono || "-")}</li>
+        <li><strong>Direccion:</strong> ${escaparHtml(usuario?.direccion || "-")}</li>
+        <li><strong>Estado:</strong> ${escaparHtml(usuario?.estado || "PENDIENTE")}</li>
+      </ul>
+      <p>LinajeGallo</p>
+    `,
+    };
+
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid owner new-user notify status:", response.statusCode);
   }
 
   function obtenerDatosContactoEnv() {
