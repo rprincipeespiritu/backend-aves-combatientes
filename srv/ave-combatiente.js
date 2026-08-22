@@ -546,6 +546,12 @@ module.exports = cds.service.impl(async function () {
       "crearCheckoutMercadoPago",
       "cancelarSuscripcion",
       "logout",
+      "adminListarUsuarios",
+      "adminActualizarEstadoUsuario",
+      "adminAsignarSuscripcion",
+      "adminCancelarSuscripcionUsuario",
+      "obtenerDatosContacto",
+      "enviarQuejaSugerencia",
     ];
 
     if (accionesSuscripcion.includes(req.event)) return;
@@ -1604,6 +1610,175 @@ module.exports = cds.service.impl(async function () {
     };
   });
 
+  function requireAdmin(req) {
+    const rol = String(req.jwtUser?.rol || "").toUpperCase();
+    if (rol !== "ADMIN") {
+      return req.reject(403, "Solo un administrador puede realizar esta operacion.");
+    }
+    return null;
+  }
+
+  this.on("adminListarUsuarios", async (req) => {
+    if (requireAdmin(req)) return;
+
+    // Entidades DB (this.entities expone Usuarios/Roles, no Usuario/Rol)
+    const { Usuario: UsuarioDb, Rol: RolDb } = cds.entities("ave.combatiente");
+
+    const usuarios = await SELECT.from(UsuarioDb)
+      .columns(
+        "ID",
+        "username",
+        "email",
+        "nombre",
+        "apellido",
+        "telefono",
+        "estado",
+        "rol_ID",
+        "ultimoAcceso",
+      )
+      .orderBy("createdAt desc");
+
+    const roles = await SELECT.from(RolDb).columns("ID", "codigo", "nombre");
+    const rolesById = new Map(roles.map((r) => [r.ID, r]));
+
+    const suscripciones = await SELECT.from(Suscripciones).orderBy("fechaFin desc");
+    const suscripcionByUsuario = new Map();
+    for (const s of suscripciones) {
+      const uid = s.usuario_ID;
+      if (!uid || suscripcionByUsuario.has(uid)) continue;
+      suscripcionByUsuario.set(uid, s);
+    }
+
+    const lista = usuarios.map((u) => {
+      const rol = rolesById.get(u.rol_ID);
+      const sus = suscripcionByUsuario.get(u.ID);
+      return {
+        ID: u.ID,
+        username: u.username || "",
+        email: u.email || "",
+        nombre: u.nombre || "",
+        apellido: u.apellido || "",
+        telefono: u.telefono || "",
+        estado: u.estado || "",
+        rolCodigo: rol?.codigo || "",
+        rolNombre: rol?.nombre || "",
+        ultimoAcceso: u.ultimoAcceso || null,
+        suscripcionId: sus?.ID || "",
+        plan: sus?.plan || "",
+        estadoSuscripcion: sus?.estado || "",
+        fechaInicio: sus?.fechaInicio || null,
+        fechaFin: sus?.fechaFin || null,
+        diasRestantes: sus?.fechaFin ? calcularDiasRestantes(sus.fechaFin) : 0,
+        mercadoPagoStatus: sus?.mercadoPagoStatus || "",
+      };
+    });
+
+    return { usuarios: lista };
+  });
+
+  this.on("adminActualizarEstadoUsuario", async (req) => {
+    if (requireAdmin(req)) return;
+
+    const { Usuario: UsuarioDb } = cds.entities("ave.combatiente");
+    const usuarioId = String(req.data?.usuarioId || "").trim();
+    const estado = String(req.data?.estado || "").trim().toUpperCase();
+    const estadosOk = ["ACTIVO", "PENDIENTE", "ELIMINADO"];
+
+    if (!usuarioId) return req.reject(400, "usuarioId es requerido.");
+    if (!estadosOk.includes(estado)) {
+      return req.reject(400, "Estado invalido. Use ACTIVO, PENDIENTE o ELIMINADO.");
+    }
+
+    const usuario = await SELECT.one.from(UsuarioDb).columns("ID").where({ ID: usuarioId });
+    if (!usuario) return req.reject(404, "Usuario no encontrado.");
+
+    await UPDATE(UsuarioDb).set({ estado }).where({ ID: usuarioId });
+
+    return {
+      success: true,
+      message: `Estado del usuario actualizado a ${estado}.`,
+    };
+  });
+
+  this.on("adminAsignarSuscripcion", async (req) => {
+    if (requireAdmin(req)) return;
+
+    const { Usuario: UsuarioDb } = cds.entities("ave.combatiente");
+    const usuarioId = String(req.data?.usuarioId || "").trim();
+    const plan = String(req.data?.plan || "").trim().toUpperCase();
+    const estado = String(req.data?.estado || "ACTIVA").trim().toUpperCase() || "ACTIVA";
+    const fechaInicio = req.data?.fechaInicio;
+    const fechaFin = req.data?.fechaFin;
+
+    if (!usuarioId) return req.reject(400, "usuarioId es requerido.");
+    if (!PLANES_SUSCRIPCION[plan]) {
+      return req.reject(400, "Plan invalido. Use PRUEBA, BASICO, PRO o PREMIUM.");
+    }
+    if (!["PENDIENTE", "ACTIVA", "VENCIDA", "CANCELADA"].includes(estado)) {
+      return req.reject(400, "Estado de suscripcion invalido.");
+    }
+
+    const usuario = await SELECT.one.from(UsuarioDb).columns("ID").where({ ID: usuarioId });
+    if (!usuario) return req.reject(404, "Usuario no encontrado.");
+
+    const base = construirDatosSuscripcion(plan, estado, fechaInicio ? new Date(fechaInicio) : new Date());
+    if (!base) return req.reject(400, "No se pudo construir la suscripcion.");
+
+    const datos = {
+      ...base,
+      estado,
+      fechaInicio: fechaInicio || base.fechaInicio,
+      fechaFin: fechaFin || base.fechaFin,
+      observaciones: "Suscripcion asignada por administrador",
+    };
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    let suscripcionId = actual?.ID;
+
+    if (actual) {
+      await UPDATE(Suscripciones).set(datos).where({ ID: actual.ID });
+    } else {
+      suscripcionId = require("crypto").randomUUID();
+      await INSERT.into(Suscripciones).entries({
+        ID: suscripcionId,
+        usuario_ID: usuarioId,
+        ...datos,
+      });
+    }
+
+    invalidarCacheSuscripcion(usuarioId);
+
+    return {
+      success: true,
+      message: `Suscripcion ${plan} asignada correctamente.`,
+      suscripcionId: suscripcionId || "",
+    };
+  });
+
+  this.on("adminCancelarSuscripcionUsuario", async (req) => {
+    if (requireAdmin(req)) return;
+
+    const usuarioId = String(req.data?.usuarioId || "").trim();
+    if (!usuarioId) return req.reject(400, "usuarioId es requerido.");
+
+    const actual = await obtenerSuscripcionUsuario(usuarioId);
+    if (!actual) return req.reject(404, "No hay una suscripcion para cancelar.");
+
+    await UPDATE(Suscripciones)
+      .set({
+        estado: "CANCELADA",
+        observaciones: "Suscripcion cancelada por administrador",
+      })
+      .where({ ID: actual.ID });
+
+    invalidarCacheSuscripcion(usuarioId);
+
+    return {
+      success: true,
+      message: "Suscripcion cancelada correctamente.",
+    };
+  });
+
   //==========================================
   // USUARIOS - Hash password
   //==========================================
@@ -1626,7 +1801,10 @@ module.exports = cds.service.impl(async function () {
 
   this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
   this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
-  this.before("READ", Suscripciones, (req) => agregarFiltroUsuario(req));
+  this.before("READ", Suscripciones, (req) => {
+    if (String(req.jwtUser?.rol || "").toUpperCase() === "ADMIN") return;
+    agregarFiltroUsuario(req);
+  });
   this.before("READ", ComposicionesLineaAve, (req) => agregarFiltroUsuario(req));
   this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
   this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
