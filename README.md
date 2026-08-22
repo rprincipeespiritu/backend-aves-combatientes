@@ -103,18 +103,24 @@ Ver seccion **"Plan Mercado Pago + Railway"** mas abajo, o el resumen entregado 
    - Agregar las variables listadas arriba
    - `BACKEND_PUBLIC_URL` = URL publica del servicio backend
    - `FRONTEND_URL` = URL del frontend + `/index.html`
-   - `CORS_ORIGIN` = origen del frontend
+   - `CORS_ORIGIN` = origen del frontend de usuarios **y** del admin (coma-separados, sin slash final), p. ej. `https://linajegallo.com,https://<admin>.up.railway.app`
    - Redeploy tras guardar variables
 
-4. **Railway (frontend `prd`)**
+4. **Railway (frontend usuarios `prd`)**
    - `API_BASE_URL` = URL del backend + `/api/avecombatiente` (segun `replace-config.js`)
 
-5. **Webhook en Mercado Pago**
+5. **Railway (frontend admin `prd`)**
+   - Repo: `admin-usuarios-suscripciones`, rama `prd`
+   - Build: `npm run build:prod` / Start: `npm start`
+   - `API_BASE_URL` = misma URL del backend + `/api/avecombatiente`
+   - Solo usuarios con rol `ADMIN`
+
+6. **Webhook en Mercado Pago**
    - URL: `https://<backend>/api/mercadopago/webhook`
    - Modo produccion cuando cobres real
    - Guardar el secret en `MERCADOPAGO_WEBHOOK_SECRET`
 
-6. **Prueba sandbox**
+7. **Prueba sandbox**
    - `MERCADOPAGO_ENV=sandbox` + token `TEST-...`
    - Suscribirse desde la app con usuario de prueba MP
    - Verificar webhook → estado `ACTIVA`
