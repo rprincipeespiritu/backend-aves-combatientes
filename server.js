@@ -8,7 +8,10 @@ const { construirDatosSuscripcion, fechaISO, sumarDias } = require("./srv/subscr
 const { invalidarCacheSuscripcion } = require("./srv/suscripcion-cache");
 
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || "http://localhost:8080",
+  origin: (process.env.CORS_ORIGIN || "http://localhost:8080,http://localhost:8081")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean),
   allowedHeaders: ["Content-Type", "Authorization"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   credentials: true,

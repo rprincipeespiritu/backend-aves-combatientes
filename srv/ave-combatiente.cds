@@ -607,4 +607,51 @@ service AveCombatienteService {
         message : String;
     };
 
+    //========================================
+    // ADMIN: usuarios y suscripciones
+    //========================================
+
+    action   adminListarUsuarios()                                                                                                                    returns {
+        usuarios : many {
+            ID              : String;
+            username        : String;
+            email           : String;
+            nombre          : String;
+            apellido        : String;
+            telefono        : String;
+            estado          : String;
+            rolCodigo       : String;
+            rolNombre       : String;
+            ultimoAcceso    : DateTime;
+            suscripcionId   : String;
+            plan            : String;
+            estadoSuscripcion : String;
+            fechaInicio     : Date;
+            fechaFin        : Date;
+            diasRestantes   : Integer;
+            mercadoPagoStatus : String;
+        };
+    };
+
+    action   adminActualizarEstadoUsuario(usuarioId: String,
+                                          estado: String)                                                                                             returns {
+        success : Boolean;
+        message : String;
+    };
+
+    action   adminAsignarSuscripcion(usuarioId: String,
+                                     plan: String,
+                                     estado: String,
+                                     fechaInicio: Date,
+                                     fechaFin: Date)                                                                                                  returns {
+        success : Boolean;
+        message : String;
+        suscripcionId : String;
+    };
+
+    action   adminCancelarSuscripcionUsuario(usuarioId: String)                                                                                       returns {
+        success : Boolean;
+        message : String;
+    };
+
 }
