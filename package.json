@@ -22,9 +22,9 @@
   },
   "scripts": {
     "start": "cds-serve",
-    "migrate": "cds deploy --to postgres",
+    "migrate": "cds deploy",
     "watch": "cds watch",
-    "deploy": "cds deploy --to postgres",
+    "deploy": "cds deploy",
     "build": "cds build",
     "test": "jest",
     "debug": "node --inspect ./node_modules/@sap/cds-dk/bin/cds.js watch",
