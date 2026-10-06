@@ -51,6 +51,8 @@ service AveCombatienteService {
                                   genero: String)                                                                                                       returns Aves;
 
     entity Crias               as projection on combatiente.Cria;
+    // Associations must include the owner's technical "Cruce abierto" line.
+    @cds.redirection.target
     entity LineasAves          as projection on combatiente.LineaAve;
     entity ComposicionesLineaAve as projection on combatiente.ComposicionLineaAve;
     entity PlanesCruces        as projection on combatiente.PlanCruce;
@@ -139,7 +141,6 @@ service AveCombatienteService {
         where
             estado <> 'ELIMINADO';
 
-    @cds.redirection.target
     @readonly
     entity LineasAvesActivas   as
         select from combatiente.LineaAve
@@ -519,6 +520,7 @@ service AveCombatienteService {
             codigo          : String;
             estado          : String;
             fechaIncubacion : Timestamp;
+            fechaEclosion   : Timestamp;
         };
         totalLineas             : Integer;
         totalCombates           : Integer;

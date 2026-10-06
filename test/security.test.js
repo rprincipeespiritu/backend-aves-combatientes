@@ -45,7 +45,7 @@ before(async () => {
   await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Usuario").entries(accounts));
   tokens = Object.fromEntries(accounts.map((user) => [user.username, issueToken(user, user.username === "admin" ? "ADMIN" : "CRIADOR")]));
   await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Ave").entries([
-    { ID: ids.aveA, placa: "A", nombre: "Propia", usuario_ID: ids.a, estado: "ACTIVO" },
+    { ID: ids.aveA, placa: "A", nombre: "Propia", sexo: "M", usuario_ID: ids.a, estado: "ACTIVO" },
     { ID: ids.aveB, placa: "B", nombre: "Ajena", usuario_ID: ids.b, estado: "ACTIVO" },
   ]));
   await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Pesaje").entries({ ID: ids.childB, ave_ID: ids.aveB, fecha: new Date().toISOString(), peso: 2 }));
@@ -120,6 +120,67 @@ test("escrituras y acciones no pueden usar registros o propietarios ajenos", asy
 test("no se pueden activar planes de pago o escribir suscripciones directamente", async () => {
   assert.equal((await request("activarSuscripcion", tokens.a, "POST", { plan: "PREMIUM" })).status, 403);
   assert.ok([403, 405].includes((await request("Suscripciones", tokens.a, "POST", { usuario_ID: ids.a, plan: "PREMIUM" })).status));
+});
+
+test("crear un plan de cruce abierto con linea y aves propias", async () => {
+  const femaleId = crypto.randomUUID();
+  await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Ave").entries({
+    ID: femaleId, placa: "PLAN-F", sexo: "H", nombre: "Hembra propia", usuario_ID: ids.a, estado: "ACTIVO",
+  }));
+  const line = await request("obtenerLineaCruceAbierto", tokens.a, "POST", {});
+  assert.equal(line.status, 200, JSON.stringify(line.data));
+  const plan = await request("PlanesCruces", tokens.a, "POST", {
+    linea_ID: line.data.lineaId, macho_ID: ids.aveA, hembra_ID: femaleId,
+    codigo: "PCA_TEST", estado: "APROBADO", fechaPropuesta: "2026-10-05",
+    usuario_ID: ids.a,
+  });
+  assert.equal(plan.status, 201, JSON.stringify(plan.data));
+  assert.equal(plan.data.usuario_ID, ids.a);
+  const expanded = await request(`PlanesCruces(${plan.data.ID})?$expand=linea,macho,hembra`, tokens.a);
+  assert.equal(expanded.status, 200, JSON.stringify(expanded.data));
+  assert.equal(expanded.data.linea.ID, line.data.lineaId);
+  assert.equal(expanded.data.linea.nombre, "Cruce abierto");
+  assert.equal(expanded.data.macho.ID, ids.aveA);
+  assert.equal(expanded.data.hembra.ID, femaleId);
+  const edited = await request(`PlanesCruces(${plan.data.ID})`, tokens.a, "PATCH", { objetivoCruce: "Prueba de edicion" });
+  assert.ok([200, 204].includes(edited.status), JSON.stringify(edited.data));
+  const activeLines = await request("LineasAvesActivas", tokens.a);
+  assert.equal(activeLines.status, 200);
+  assert.ok(activeLines.data.value.every((row) => row.nombre !== "Cruce abierto"));
+
+  // Correct redirection must not make another account's line or birds available.
+  const otherLine = await request("obtenerLineaCruceAbierto", tokens.b, "POST", {});
+  assert.equal(otherLine.status, 200);
+  for (const foreignReference of [
+    { linea_ID: otherLine.data.lineaId }, { macho_ID: ids.aveB }, { hembra_ID: ids.aveB },
+  ]) {
+    const denied = await request("PlanesCruces", tokens.a, "POST", {
+      linea_ID: line.data.lineaId, macho_ID: ids.aveA, hembra_ID: femaleId, ...foreignReference,
+    });
+    assert.equal(denied.status, 404, JSON.stringify(denied.data));
+  }
+  assert.equal((await request(`PlanesCruces(${plan.data.ID})?$expand=linea`, tokens.b)).status, 404);
+  assert.equal((await request(`PlanesCruces(${plan.data.ID})`, tokens.b, "PATCH", { objetivoCruce: "Ajeno" })).status, 404);
+});
+
+test("crear un plan de cruce de linaje propio conserva sus asociaciones", async () => {
+  const [lineId, maleId, femaleId] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  await cds.db.run(cds.ql.INSERT.into("ave.combatiente.LineaAve").entries({
+    ID: lineId, nombre: "Linaje propio", usuario_ID: ids.a, estado: "ACTIVA",
+    aveFundador_ID: maleId, aveFundadora_ID: femaleId,
+  }));
+  await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Ave").entries([
+    { ID: maleId, placa: "LINE-M", sexo: "M", usuario_ID: ids.a, estado: "ACTIVO", linea_ID: lineId },
+    { ID: femaleId, placa: "LINE-F", sexo: "H", usuario_ID: ids.a, estado: "ACTIVO", linea_ID: lineId },
+  ]));
+  const plan = await request("PlanesCruces", tokens.a, "POST", {
+    linea_ID: lineId, macho_ID: maleId, hembra_ID: femaleId, codigo: "PC_TEST",
+  });
+  assert.equal(plan.status, 201, JSON.stringify(plan.data));
+  assert.equal(plan.data.usuario_ID, ids.a);
+  const expanded = await request(`PlanesCruces(${plan.data.ID})?$expand=linea`, tokens.a);
+  assert.equal(expanded.status, 200);
+  assert.equal(expanded.data.linea.ID, lineId);
 });
 
 test("login y registro conservan el flujo publico con rol limitado", async () => {

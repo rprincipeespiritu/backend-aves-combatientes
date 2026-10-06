@@ -5075,7 +5075,7 @@ module.exports = cds.service.impl(async function () {
           usuario_ID: usuarioId,
           estado: { "!=": "ELIMINADO" },
         })
-        .columns("ID", "codigo", "estado", "fechaIncubacion")
+        .columns("ID", "codigo", "estado", "fechaIncubacion", "fechaEclosion")
         .orderBy("createdAt desc")
         .limit(5),
     ]);
