@@ -26,7 +26,7 @@
     "watch": "cds watch",
     "deploy": "cds deploy",
     "build": "cds build",
-    "test": "jest",
+    "test": "node --test test/*.test.js",
     "debug": "node --inspect ./node_modules/@sap/cds-dk/bin/cds.js watch",
     "debug:brk": "node --inspect-brk ./node_modules/@sap/cds-dk/bin/cds.js watch"
   },
@@ -35,17 +35,22 @@
       "db": {
         "kind": "postgres",
         "impl": "@cap-js/postgres",
-        "credentials": {
-          "host": "localhost",
-          "port": 5432,
-          "user": "postgres",
-          "password": "1123581321",
-          "database": "aves_combatientes_db"
+        "[development]": {
+          "credentials": {
+            "host": "localhost",
+            "port": 5432,
+            "user": "postgres",
+            "database": "aves_combatientes_db"
+          }
         }
       },
       "auth": {
-        "kind": "dummy"
+        "impl": "./srv/security/auth.js",
+        "restrict_all_services": false
       }
+    },
+    "server": {
+      "cors": false
     }
   }
 }

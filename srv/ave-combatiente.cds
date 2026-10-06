@@ -112,32 +112,8 @@ service AveCombatienteService {
     // USUARIOS Y SEGURIDAD
     //========================================
 
-    entity Usuarios            as projection on combatiente.Usuario {
-        ID,
-        createdAt,
-        createdBy,
-        modifiedAt,
-        modifiedBy,
-        username,
-        email,
-        password,
-        nombre,
-        apellido,
-        telefono,
-        direccion,
-        fotoUrl,
-        rol,
-        estado,
-        tokenActivacion,
-        tokenExpiracion,
-        tokenRecuperacion,
-        tokenRecuperacionExp,
-        ultimoAcceso,
-        preferencias
-    };
-    entity Suscripciones       as projection on combatiente.Suscripcion;
-
-    entity Roles               as projection on combatiente.Rol;
+    @readonly
+    entity Suscripciones as projection on combatiente.Suscripcion;
 
     //========================================
     // AUDITORÍA
