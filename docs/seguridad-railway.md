@@ -50,7 +50,12 @@ Variables del servicio backend:
 
 Railway permite referenciar las variables del servicio PostgreSQL. Usar los
 valores del servicio real de este proyecto. Este backend utiliza las variables
-CAP indicadas arriba; no interpreta `DATABASE_URL` automaticamente. Si el
+CAP indicadas arriba o las variables nativas `PGHOST`, `PGPORT`, `PGDATABASE`,
+`PGUSER` y `PGPASSWORD` del servicio backend. No es necesario duplicarlas:
+el arranque completa las credenciales CAP faltantes desde las variables `PG...`,
+manteniendo la contrasena como texto y dando prioridad a valores CAP explicitos.
+Tambien resuelve los placeholders del perfil `pg` durante el arranque.
+No interpreta `DATABASE_URL` automaticamente. Si el
 servidor PostgreSQL exige TLS, configurar las credenciales `ssl` correspondientes
 con verificacion del certificado; no desactivar esa verificacion por defecto.
 

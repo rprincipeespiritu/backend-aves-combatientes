@@ -7,11 +7,8 @@ const { construirDatosSuscripcion, fechaISO, sumarDias, PLANES_SUSCRIPCION } = r
 const { invalidarCacheSuscripcion } = require("./srv/suscripcion-cache");
 
 require("./srv/security/identity").secret();
+require("./srv/database-config").configurePostgres(cds.env.requires.db);
 if (process.env.NODE_ENV === "production") {
-  const credentials = cds.env.requires.db?.credentials || {};
-  if (!credentials.host || !credentials.database || !credentials.user || !credentials.password) {
-    throw new Error("Configura las credenciales PostgreSQL de Railway mediante CDS_REQUIRES_DB_CREDENTIALS_*.");
-  }
   if (!process.env.CORS_ORIGIN) throw new Error("Configura CORS_ORIGIN con el origen HTTPS del frontend.");
 }
 
