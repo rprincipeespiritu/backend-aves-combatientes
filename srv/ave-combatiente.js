@@ -1,5 +1,6 @@
 const cds = require("@sap/cds");
-const jwt = require("jsonwebtoken");
+const { effectiveRole, issueToken } = require("./security/identity");
+const { authorize, PUBLIC_ACTIONS } = require("./security/authorization");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const sgMail = require("@sendgrid/mail");
@@ -19,9 +20,6 @@ const {
   guardarCacheSuscripcion,
 } = require("./suscripcion-cache");
 
-const JWT_SECRET =
-  process.env.JWT_SECRET || "ave-combatiente-secret-2024-xK9#mP";
-const JWT_EXPIRES = process.env.JWT_EXPIRES || "1h";
 const VIDEO_COMBATE_MAX_BYTES = Number(process.env.COMBATE_VIDEO_MAX_BYTES || 524288000);
 const VIDEO_STORAGE_PROVIDER = process.env.COMBATE_VIDEO_PROVIDER || "AWS_S3";
 const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET || "";
@@ -157,19 +155,6 @@ const PERMISOS_ROL = {
   },
 };
 
-const METODO_A_OPERACION = {
-  GET: "READ",
-  POST: "CREATE",
-  PATCH: "UPDATE",
-  PUT: "UPDATE",
-  DELETE: "DELETE",
-};
-
-function extraerEntidad(path) {
-  const match = path.match(/\/api\/avecombatiente\/([A-Za-z]+)/);
-  return match ? match[1] : null;
-}
-
 function normalizarNombreArchivo(nombreArchivo = "combate.mp4") {
   return String(nombreArchivo)
     .normalize("NFD")
@@ -236,6 +221,11 @@ async function crearUploadUrlS3({ bucket, storageKey, mimeType }) {
 }
 
 async function crearDownloadUrlS3({ bucket, storageKey }) {
+  const userId = cds.context?.user?.id;
+  const prefixes = ["aves", "combates", "usuarios"].map((kind) => construirStorageKeyS3(kind, userId) + "/");
+  if (!userId || !prefixes.some((prefix) => storageKey.startsWith(prefix))) {
+    throw Object.assign(new Error("No tienes acceso a este archivo."), { statusCode: 403 });
+  }
   if (!bucket) return null;
 
   const command = new GetObjectCommand({
@@ -344,68 +334,8 @@ function construirMetadataFotoUsuario({ usuarioId, nombreArchivo, mimeType }) {
 }
 
 //============================================
-// MIDDLEWARE JWT - Solo /login es público
+// IMPLEMENTACION DEL SERVICIO
 //============================================
-function middlewareJWT(req, res, next) {
-  if (req.path === "/api/avecombatiente/login") return next();
-
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
-
-  if (!token) {
-    return res.status(401).json({
-      error: "No autorizado",
-      message: "Token requerido. Encabezado: Authorization: Bearer <token>",
-    });
-  }
-
-  try {
-    req.jwtUser = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch (err) {
-    const msg =
-      err.name === "TokenExpiredError" ? "Token expirado" : "Token inválido";
-    return res.status(403).json({ error: msg });
-  }
-}
-
-//============================================
-// MIDDLEWARE PERMISOS - Verifica rol vs entidad
-//============================================
-function middlewarePermisos(req, res, next) {
-  if (req.path === "/api/avecombatiente/login") return next();
-  if (!req.jwtUser) return next();
-
-  const rol = req.jwtUser.rol;
-  const entidad = extraerEntidad(req.path);
-  const operacion = METODO_A_OPERACION[req.method];
-
-  if (!entidad || !operacion) return next();
-
-  const permisosRol = PERMISOS_ROL[rol];
-  if (!permisosRol) {
-    return res.status(403).json({ error: `Rol desconocido: ${rol}` });
-  }
-
-  const permisosEntidad = permisosRol[entidad] || [];
-  if (!permisosEntidad.includes(operacion)) {
-    return res.status(403).json({
-      error: "Sin permisos",
-      message: `El rol "${rol}" no puede realizar ${operacion} en ${entidad}`,
-    });
-  }
-
-  next();
-}
-
-//============================================
-// REGISTRAR MIDDLEWARES GLOBALMENTE
-//============================================
-// cds.on('bootstrap', (app) => {
-//     app.use(middlewareJWT);
-//     app.use(middlewarePermisos);
-// });
-
 module.exports = cds.service.impl(async function () {
   const {
     Aves,
@@ -418,8 +348,6 @@ module.exports = cds.service.impl(async function () {
     FotosAve,
     VideosAve,
     Transacciones,
-    Usuario,
-    Rol,
     Suscripciones,
     LineasAves,
     ComposicionesLineaAve,
@@ -430,30 +358,10 @@ module.exports = cds.service.impl(async function () {
     AvesActivas,
     LineasAvesActivas,
   } = this.entities;
-
-  function agregarFiltroUsuario(req, campoUsuario = "usuario_ID") {
-    const userId = req.jwtUser && req.jwtUser.id;
-    if (!userId || !req.query?.SELECT) return;
-
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
-    }
-
-    req.query.SELECT.where.push({ ref: [campoUsuario] }, "=", { val: userId });
-  }
+  const { Usuario, Rol } = cds.entities("ave.combatiente");
 
   function agregarFiltroEstadoNoEliminado(req, campoEstado = "estado") {
-    if (!req.query?.SELECT) return;
-
-    if (!req.query.SELECT.where) {
-      req.query.SELECT.where = [];
-    } else if (req.query.SELECT.where.length > 0) {
-      req.query.SELECT.where.push("and");
-    }
-
-    req.query.SELECT.where.push({ ref: [campoEstado] }, "!=", { val: "ELIMINADO" });
+    if (req.query?.SELECT) req.query.where([{ ref: [campoEstado] }, "!=", { val: "ELIMINADO" }]);
   }
 
   function calcularDiasRestantes(fechaFin) {
@@ -621,123 +529,14 @@ module.exports = cds.service.impl(async function () {
     }
   }
 
-  // Intercepta TODAS las operaciones del servicio
-  this.before("*", async (req) => {
-    // El action login no requiere token
-    const accionesPublicas = [
-      "login",
-      "logout",
-      "registrarUsuario",
-      "reenviarActivacion",
-      "solicitarRecuperacionPassword",
-      "restablecerPassword",
-    ];
-    if (accionesPublicas.includes(req.event)) return;
-
-    // Obtener token del header
-    const authHeader =
-      req.headers?.authorization || req._.req?.headers?.authorization;
-    const token = authHeader && authHeader.split(" ")[1];
-
-    if (!token)
-      return req.reject(
-        401,
-        "Token requerido. Encabezado: Authorization: Bearer <token>",
-      );
-
-    try {
-      req.jwtUser = jwt.verify(token, JWT_SECRET);
-    } catch (err) {
-      const msg =
-        err.name === "TokenExpiredError" ? "Token expirado" : "Token inválido";
-      return req.reject(403, msg);
-    }
-
-    if (req.event === "recalcularComposicionLineas") return;
-
-    // Verificar permisos por rol
-    const rol = req.jwtUser.rol;
-    let operacion = req.event; // READ, CREATE, UPDATE, DELETE
-    const entidadRaw = req.target?.name || req.entity || "";
-    const entidad = req.entity?.split(".").pop(); // "ave.combatiente.Ave" -> "Ave"
-
-    if (!entidad || !operacion) return;
-
-    // Mapear nombre de entidad CDS al nombre del servicio
-    const ENTIDAD_MAP = {
-      Ave: "Aves",
-      Aves: "Aves",
-      Cria: "Crias",
-      Crias: "Crias",
-      Pesaje: "Pesajes",
-      Pesajes: "Pesajes",
-      Pelea: "Peleas",
-      Peleas: "Peleas",
-      Incubacion: "Incubaciones",
-      Incubaciones: "Incubaciones",
-      Tratamiento: "Tratamientos",
-      Tratamientos: "Tratamientos",
-      Alimentacion: "Alimentaciones",
-      Alimentaciones: "Alimentaciones",
-      Transaccion: "Transacciones",
-      Transacciones: "Transacciones",
-      Raza: "Razas",
-      Razas: "Razas",
-      Color: "Colores",
-      Colores: "Colores",
-      TipoAve: "TiposAve",
-      TiposAve: "TiposAve",
-      FotoAve: "FotosAve",
-      FotosAve: "FotosAve",
-      VideoAve: "VideosAve",
-      VideosAve: "VideosAve",
-      DocumentoAve: "DocumentosAve",
-      DocumentosAve: "DocumentosAve",
-      FotoPelea: "FotosPelea",
-      FotosPelea: "FotosPelea",
-      Usuario: "Usuarios",
-      Usuarios: "Usuarios",
-      Suscripcion: "Suscripciones",
-      Suscripciones: "Suscripciones",
-      Rol: "Roles",
-      Roles: "Roles",
-      HistorialCambios: "Historial",
-      Historial: "Historial",
-      LineaAve: "LineasAves",
-      LineasAves: "LineasAves",
-      LineasAvesActivas: "LineasAves",
-    PlanCruce: "PlanesCruces",
-    PlanesCruces: "PlanesCruces",
-    ComposicionLineaAve: "ComposicionesLineaAve",
-    ComposicionesLineaAve: "ComposicionesLineaAve",
-    EvaluacionAve: "EvaluacionesAves",
-      EvaluacionesAves: "EvaluacionesAves",
-      EvaluacionPleito: "EvaluacionesPleito",
-      EvaluacionesPleito: "EvaluacionesPleito",
-      IncubacionDetalle: "IncubacionDetalles",
-      IncubacionDetalles: "IncubacionDetalles",
-    };
-
-    let entidadServicio = ENTIDAD_MAP[entidad];
-    if (req.event === "registrarCombate") {
-      operacion = "CREATE";
-      entidadServicio = "Peleas";
-    }
-    const permisosRol = PERMISOS_ROL[rol];
-
-    if (!permisosRol) return req.reject(403, `Rol desconocido: ${rol}`);
-    if (!entidadServicio) return;
-
-    const permisosEntidad = permisosRol[entidadServicio] || [];
-    if (!permisosEntidad.includes(operacion)) {
-      return req.reject(
-        403,
-        `El rol "${rol}" no puede realizar ${operacion} en ${entidadServicio}`,
-      );
-    }
-
-    await validarSuscripcion(req, entidadServicio);
-  });
+  // Authentication is provided by CAP's custom middleware in every environment.
+  this.before("*", Object.assign(async (req) => {
+    if (PUBLIC_ACTIONS.has(req.event)) return;
+    if (!req.user.is("authenticated-user")) return req.reject(401, "Debes iniciar sesion.");
+    req.jwtUser = { id: req.user.id, rol: req.user.attr.role };
+    const module = await authorize(req, this, PERMISOS_ROL);
+    if (module) await validarSuscripcion(req, module);
+  }, { _initial: true }));
 
   this.on("registrarRoles", async (req) => {
     const { codigo, nombre, descripcion, permisos, activo } = req.data;
@@ -822,7 +621,7 @@ module.exports = cds.service.impl(async function () {
     const bcrypt = require("bcryptjs");
     const passwordHash = await bcrypt.hash(password, 10);
 
-    let rolCodigo = "ADMIN",
+    let rolCodigo = "CRIADOR",
       rolNombre = "",
       rol_id = "";
     // Obtener nombre del rol
@@ -830,7 +629,7 @@ module.exports = cds.service.impl(async function () {
     const rol = await SELECT.one
       .from("ave.combatiente.Rol")
       .columns("codigo", "nombre", "ID")
-      .where({ codigo: rolCodigo });
+      .where({ codigo: rolCodigo, activo: true });
 
     if (rol) {
       rolCodigo = rol.codigo;
@@ -971,6 +770,7 @@ module.exports = cds.service.impl(async function () {
         "apellido",
         "fotoUrl",
         "rol_ID",
+        "sessionVersion",
       )
       .where({ email: email.trim().toLowerCase() });
 
@@ -991,19 +791,10 @@ module.exports = cds.service.impl(async function () {
       return req.error(401, "Password inválido");
     }
 
-    // Obtener nombre del rol
-    let rolCodigo = "VIEWER",
-      rolNombre = "Viewer";
-    if (user.rol_ID) {
-      const rol = await SELECT.one
-        .from("ave.combatiente.Rol")
-        .columns("codigo", "nombre")
-        .where({ ID: user.rol_ID });
-      if (rol) {
-        rolCodigo = rol.codigo;
-        rolNombre = rol.nombre;
-      }
-    }
+    const storedRole = await SELECT.one.from("ave.combatiente.Rol").where({ ID: user.rol_ID });
+    const rolCodigo = effectiveRole(user, storedRole);
+    if (!rolCodigo) return req.reject(403, "La cuenta no tiene un rol activo.");
+    const rolNombre = rolCodigo === "ADMIN" ? "Administrador" : rolCodigo === "CRIADOR" ? "Criador" : storedRole.nombre;
 
     // Actualizar último acceso
     await UPDATE("ave.combatiente.Usuario")
@@ -1011,19 +802,7 @@ module.exports = cds.service.impl(async function () {
       .where({ ID: user.ID });
 
     // Generar token
-    const token = jwt.sign(
-      {
-        id: user.ID,
-        username: user.username,
-        nombre: user.nombre,
-        apellido: user.apellido,
-        email: user.email,
-        rol: rolCodigo,
-        activo: user.activo,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES },
-    );
+    const token = issueToken(user, rolCodigo);
 
     return {
       success: true,
@@ -1039,12 +818,19 @@ module.exports = cds.service.impl(async function () {
   });
 
   this.on("logout", async (req) => {
-    // JWT es stateless, solo confirmamos al cliente
+    // Revoke all sessions for this account; works across Railway replicas.
+    await UPDATE("ave.combatiente.Usuario")
+      .set({ sessionVersion: { xpr: [{ func: "coalesce", args: [{ ref: ["sessionVersion"] }, { val: 0 }] }, "+", { val: 1 }] } })
+      .where({ ID: req.user.id });
     return {
       success: true,
       message: "Sesión cerrada exitosamente",
     };
   });
+  function reqRoleName(storedName) {
+    const role = cds.context?.user?.attr?.role;
+    return role === "ADMIN" ? "Administrador" : role === "CRIADOR" ? "Criador" : storedName;
+  }
   async function obtenerUsuarioPerfil(usuarioId) {
     const user = await SELECT.one
       .from("ave.combatiente.Usuario")
@@ -1083,7 +869,7 @@ module.exports = cds.service.impl(async function () {
       telefono: user.telefono,
       direccion: user.direccion,
       fotoUrl: user.fotoUrl || "",
-      rol: rolNombre,
+      rol: reqRoleName(rolNombre),
       estado: user.estado,
     };
   }
@@ -1339,16 +1125,7 @@ module.exports = cds.service.impl(async function () {
       return req.reject(400, "Debe seleccionar un plan valido: PRUEBA, BASICO, PRO o PREMIUM.");
     }
 
-    // En produccion solo se permite activar gratis el plan de prueba.
-    // Para pruebas locales: ALLOW_MANUAL_PAID_PLANS=true
-    const allowManualPaid = String(process.env.ALLOW_MANUAL_PAID_PLANS || "").toLowerCase() === "true";
-    if (plan !== "PRUEBA" && !allowManualPaid) {
-      return req.reject(
-        400,
-        "Los planes de pago se activan solo mediante Mercado Pago. Usa Suscribirse en la pantalla de suscripcion.",
-      );
-    }
-
+    if (plan !== "PRUEBA") return req.reject(403, "Los planes de pago requieren un pago confirmado o asignacion administrativa.");
     const actual = await obtenerSuscripcionUsuario(usuarioId);
     if (plan === "PRUEBA" && actual) {
       return req.reject(400, "El plan de prueba solo se activa automaticamente para usuarios nuevos.");
@@ -1692,7 +1469,10 @@ module.exports = cds.service.impl(async function () {
     const usuario = await SELECT.one.from(UsuarioDb).columns("ID").where({ ID: usuarioId });
     if (!usuario) return req.reject(404, "Usuario no encontrado.");
 
-    await UPDATE(UsuarioDb).set({ estado }).where({ ID: usuarioId });
+    await UPDATE(UsuarioDb).set({
+      estado,
+      sessionVersion: { xpr: [{ func: "coalesce", args: [{ ref: ["sessionVersion"] }, { val: 0 }] }, "+", { val: 1 }] },
+    }).where({ ID: usuarioId });
 
     return {
       success: true,
@@ -1782,33 +1562,6 @@ module.exports = cds.service.impl(async function () {
   //==========================================
   // USUARIOS - Hash password
   //==========================================
-  this.before("CREATE", "Usuarios", async (req) => {
-    if (!req.data.password) return req.error(400, "Password es requerido");
-    req.data.password = await bcrypt.hash(req.data.password, 10);
-  });
-
-  this.before("UPDATE", "Usuarios", async (req) => {
-    if (req.data.password)
-      req.data.password = await bcrypt.hash(req.data.password, 10);
-  });
-
-  this.after("READ", "Usuarios", (result) => {
-    const lista = Array.isArray(result) ? result : [result];
-    lista.forEach((u) => {
-      if (u) delete u.password;
-    });
-  });
-
-  this.before("READ", Aves, (req) => agregarFiltroUsuario(req));
-  this.before("READ", Crias, (req) => agregarFiltroUsuario(req));
-  this.before("READ", Suscripciones, (req) => {
-    if (String(req.jwtUser?.rol || "").toUpperCase() === "ADMIN") return;
-    agregarFiltroUsuario(req);
-  });
-  this.before("READ", ComposicionesLineaAve, (req) => agregarFiltroUsuario(req));
-  this.before("READ", IncubacionesActivas, (req) => agregarFiltroUsuario(req));
-  this.before("READ", AvesActivas, (req) => agregarFiltroUsuario(req));
-  this.before("READ", LineasAvesActivas, (req) => agregarFiltroUsuario(req));
 
   function normalizarCria(data) {
     data.cintillo = String(data.cintillo || "").trim().toUpperCase();
@@ -4291,7 +4044,7 @@ module.exports = cds.service.impl(async function () {
     const memoKey = `${aveId}:${generaciones}`;
     if (memo.has(memoKey)) return memo.get(memoKey);
 
-    const ave = await SELECT.one.from(Aves).where({ ID: aveId });
+    const ave = await SELECT.one.from(Aves).where({ ID: aveId, usuario_ID: cds.context.user.id });
     if (!ave) {
       memo.set(memoKey, null);
       return null;
@@ -4327,7 +4080,7 @@ module.exports = cds.service.impl(async function () {
     return SELECT.one
       .from(Aves)
       .columns("ID", "placa", "nombre", "sexo", "padre_ID", "madre_ID", "aptoReproduccion", "estado")
-      .where({ ID: aveId });
+      .where({ ID: aveId, usuario_ID: cds.context.user.id });
   }
 
   async function construirMapaAncestros(aveId, generaciones, distancia = 0, mapa = new Map()) {
@@ -5561,15 +5314,8 @@ module.exports = cds.service.impl(async function () {
     return { lineaId: linea.ID };
   });
 
-  this.before("READ", Incubaciones, (req) => agregarFiltroUsuario(req));
-  this.before("READ", Peleas, (req) => agregarFiltroUsuario(req));
-  this.before("READ", IncubacionDetalles, (req) => agregarFiltroUsuario(req));
   this.before("READ", PlanesCruces, (req) => {
-    agregarFiltroUsuario(req);
     agregarFiltroEstadoNoEliminado(req);
   });
-  this.before("READ", LineasAves, (req) => agregarFiltroUsuario(req));
-  this.before("READ", EvaluacionesAves, (req) => agregarFiltroUsuario(req));
-  this.before("READ", EvaluacionesPleito, (req) => agregarFiltroUsuario(req));
 
 });

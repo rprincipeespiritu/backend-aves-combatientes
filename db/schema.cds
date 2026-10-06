@@ -469,6 +469,7 @@ entity Usuario : cuid, managed {
     tokenRecuperacionExp : Timestamp;
 
     ultimoAcceso         : DateTime;
+    sessionVersion       : Integer default 0;
 
     // Preferencias
     preferencias         : LargeString; // JSON

@@ -23,7 +23,8 @@
   },
   "scripts": {
     "start": "cds-serve",
-    "deploy": "cds deploy --profile pg"
+    "deploy": "cds deploy --profile pg",
+    "test": "node --test test/*.test.js"
   },
   "cds": {
     "requires": {
@@ -42,10 +43,16 @@
         }
       },
       "auth": {
-        "[production]": {
-          "kind": "dummy"
-        }
+        "impl": "./srv/security/auth.js",
+        "restrict_all_services": false
+      },
+      "db": {
+        "kind": "postgres",
+        "impl": "@cap-js/postgres"
       }
+    },
+    "server": {
+      "cors": false
     }
   }
 }

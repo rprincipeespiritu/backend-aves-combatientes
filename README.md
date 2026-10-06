@@ -15,6 +15,10 @@ File or Folder | Purpose
 
 ## Next Steps
 
+Para autenticacion JWT, pruebas locales en `dev` y despliegue de `prd` en Railway,
+ver [Seguridad y Railway](docs/seguridad-railway.md). Antes de iniciar esta version
+sobre una base existente, aplicar `migrations/001_session_version.sql`.
+
 - Open a new terminal and run `cds watch`
 - (in VS Code simply choose _**Terminal** > Run Task > cds watch_)
 - Start adding content, for example, a [db/schema.cds](db/schema.cds).
