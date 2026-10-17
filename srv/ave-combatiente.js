@@ -1137,7 +1137,7 @@ module.exports = cds.service.impl(async function () {
       ...construirDatosSuscripcion(plan, "ACTIVA", inicio),
       fechaFin: fechaISO(fin),
       proveedorPago: plan === "PRUEBA" ? null : "MANUAL",
-      observaciones: plan === "PRUEBA" ? "Plan de prueba premium activado por 60 dias" : `Plan ${plan} activado por 30 dias`,
+      observaciones: plan === "PRUEBA" ? `Plan de prueba premium activado por ${config.dias} dias` : `Plan ${plan} activado por 30 dias`,
     };
 
     if (actual) {
@@ -4805,7 +4805,7 @@ module.exports = cds.service.impl(async function () {
       subject: `Nueva cuenta de prueba en LinajeGallo: ${nombreCompleto}`,
       html: `
       <h2>Nueva cuenta de prueba activada</h2>
-      <p>Un usuario activo el plan de prueba Premium por 60 dias.</p>
+      <p>Un usuario activo el plan de prueba Premium por ${PLANES_SUSCRIPCION.PRUEBA.dias} dias.</p>
       <ul>
         <li><strong>Nombre:</strong> ${nombreCompleto}</li>
         <li><strong>Usuario:</strong> ${usuario?.username || "-"}</li>

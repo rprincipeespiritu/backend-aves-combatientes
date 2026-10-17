@@ -4,6 +4,21 @@ const { obtenerPlanesSuscripcion, construirDatosSuscripcion, construirDatosRenov
 const { evaluar } = require("../scripts/evaluar-precios");
 const assumptions = require("../docs/pricing-assumptions.json");
 
+test("la prueba gratuita vence a los 30 dias, incluso al cambiar de mes o de anio", () => {
+  for (const [inicio, fin] of [
+    ["2026-10-17", "2026-11-16"],
+    ["2026-01-31", "2026-03-02"],
+    ["2026-12-15", "2027-01-14"],
+  ]) {
+    const fecha = new Date(`${inicio}T12:00:00Z`);
+    const prueba = construirDatosSuscripcion("PRUEBA", "ACTIVA", fecha);
+    assert.equal(prueba.fechaInicio, inicio);
+    assert.equal(prueba.fechaFin, fin);
+    assert.equal(prueba.precioMensual, 0);
+    assert.equal(fecha.toISOString(), `${inicio}T12:00:00.000Z`);
+  }
+});
+
 test("nuevas suscripciones usan el catalogo y la renovacion conserva el precio contratado", () => {
   for (const plan of obtenerPlanesSuscripcion()) {
     const nueva = construirDatosSuscripcion(plan.plan);

@@ -66,7 +66,7 @@ Supuestos base (no mediciones):
 - Infraestructura fija USD22 Railway + USD20 SendGrid + USD20/12 Squarespace, según importes informados, más USD3 de reserva estimada de copias. La reserva anterior de dominio/copias queda reemplazada, no se suma otra vez.
 - `squarespaceDomainAnnualUSD`: USD20 anuales informados. `squarespaceWebsiteMonthlyUSD`: cero; no se ha informado otro pago. Si existiera un plan adicional, ingresar su costo mensual equivalente. Se retiró el escenario hipotético de USD20/mes de sitio para no confundirlo con el pago anual real.
 - Reserva de 18% para posibles impuestos/cargos de proveedores y 15% de contingencia sobre infraestructura. Se trata como costo sin descontar crédito fiscal; si los USD22 ya incluyen impuestos, esta reserva sobredimensiona esa parte intencionalmente.
-- 50 usuarios de prueba a S/0.50/mes cada uno. Hay prueba de 60 días con acceso Premium: este costo puede aumentar mucho; no es un límite aplicado.
+- 50 usuarios de prueba a S/0.50/mes cada uno. Las nuevas pruebas duran 30 días con acceso Premium; las ya activadas conservan su vencimiento. Este costo puede aumentar mucho; no es un límite aplicado.
 - Mezcla esperada: 50% Básico, 35% Pro, 15% Premium. Son proporciones, no clientes reales.
 - Reserva por devoluciones/impagos de 3% del precio. Los clientes del cálculo son suscriptores efectivamente cobrados.
 - Uso mensual por cliente: Básico 0.05 GB almacenados/0.1 GB descargados; Pro 0.2/0.5 GB; Premium 5/10 GB. Incluye peticiones S3 y S/0.50, S/1 y S/2 por cliente para crecimiento de recursos de la app. Son presupuestos de consumo, no cuotas implementadas.
