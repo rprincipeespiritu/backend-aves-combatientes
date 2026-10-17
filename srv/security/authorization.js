@@ -7,7 +7,7 @@ const PUBLIC_ACTIONS = new Set([
 const ACCOUNT_ACTIONS = new Set([
   "logout", "obtenerPerfil", "actualizarPerfil", "cambiarPassword",
   "prepararCargaFotoUsuario", "actualizarFotoPerfil", "eliminarFotoPerfil",
-  "obtenerSuscripcionActual", "activarSuscripcion", "crearCheckoutMercadoPago",
+  "obtenerSuscripcionActual", "obtenerPlanesSuscripcion", "activarSuscripcion", "crearCheckoutMercadoPago",
   "cancelarSuscripcion", "obtenerDatosContacto", "enviarQuejaSugerencia",
   "obtenerUrlLecturaS3", "obtenerUrlsLecturaS3",
 ]);

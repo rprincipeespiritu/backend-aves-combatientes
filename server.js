@@ -4,7 +4,7 @@ const cds = require("@sap/cds");
 const cors = require("cors");
 const crypto = require("crypto");
 const express = require("express");
-const { construirDatosSuscripcion, fechaISO, sumarDias } = require("./srv/subscription-config");
+const { construirDatosRenovacion, fechaISO, sumarDias } = require("./srv/subscription-config");
 const { invalidarCacheSuscripcion } = require("./srv/suscripcion-cache");
 
 require("./srv/security/identity").secret();
@@ -104,7 +104,7 @@ cds.on("bootstrap", (app) => {
         canceled: "CANCELADA",
       };
       const estado = statusMap[preapproval.status] || "PENDIENTE";
-      const datosPlan = construirDatosSuscripcion(actual.plan, estado) || {};
+      const datosPlan = construirDatosRenovacion(actual, estado);
       const fechaInicio = preapproval.date_created ? new Date(preapproval.date_created) : new Date();
       const fechaFin = preapproval.next_payment_date ? new Date(preapproval.next_payment_date) : sumarDias(fechaInicio, 30);
 

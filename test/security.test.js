@@ -59,6 +59,51 @@ after(async () => {
   await cds.db?.disconnect();
 });
 
+test("catalogo autenticado y checkout cobran el mismo precio; webhook conserva contratos anteriores", async (t) => {
+  assert.equal((await request("obtenerPlanesSuscripcion", null, "POST", {})).status, 401);
+  const catalog = await request("obtenerPlanesSuscripcion", tokens.a, "POST", {});
+  assert.equal(catalog.status, 200, JSON.stringify(catalog.data));
+  assert.equal(catalog.data.planes.length, 3);
+  const previous = await cds.db.run(cds.ql.SELECT.one.from("ave.combatiente.Suscripcion").where({ usuario_ID: ids.a }));
+  const oldToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const oldSecret = process.env.MERCADOPAGO_WEBHOOK_SECRET;
+  process.env.MERCADOPAGO_ACCESS_TOKEN = "test-only-no-external-payments";
+  process.env.MERCADOPAGO_WEBHOOK_SECRET = "";
+  t.after(async () => {
+    if (oldToken === undefined) delete process.env.MERCADOPAGO_ACCESS_TOKEN;
+    else process.env.MERCADOPAGO_ACCESS_TOKEN = oldToken;
+    if (oldSecret === undefined) delete process.env.MERCADOPAGO_WEBHOOK_SECRET;
+    else process.env.MERCADOPAGO_WEBHOOK_SECRET = oldSecret;
+    await cds.db.run(cds.ql.DELETE.from("ave.combatiente.Suscripcion").where({ usuario_ID: ids.a }));
+    await cds.db.run(cds.ql.INSERT.into("ave.combatiente.Suscripcion").entries(previous));
+    require("../srv/suscripcion-cache").invalidarCacheSuscripcion(ids.a);
+  });
+  const originalFetch = global.fetch;
+  let sent;
+  t.mock.method(global, "fetch", async (url, options) => {
+    if (String(url).startsWith("https://api.mercadopago.com/preapproval")) {
+      if (options?.method === "POST") sent = JSON.parse(options.body);
+      return new Response(JSON.stringify({ id: "test-preapproval", status: options?.method === "POST" ? "pending" : "authorized", init_point: "https://example.invalid/checkout", next_payment_date: "2099-01-01" }), { status: 200 });
+    }
+    return originalFetch(url, options);
+  });
+  for (const p of catalog.data.planes) {
+    const checkout = await request("crearCheckoutMercadoPago", tokens.a, "POST", { plan: p.plan });
+    assert.equal(checkout.status, 200, JSON.stringify(checkout.data));
+    assert.equal(sent.auto_recurring.transaction_amount, Number(p.precioMensual));
+    assert.equal(sent.auto_recurring.currency_id, p.moneda);
+    assert.equal(sent.auto_recurring.frequency_type, "months");
+  }
+  await cds.db.run(cds.ql.UPDATE("ave.combatiente.Suscripcion").set({ plan: "PREMIUM", precioMensual: 99 }).where({ usuario_ID: ids.a }));
+  const webhook = await originalFetch(base.replace("/avecombatiente/", "/mercadopago/webhook"), {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "subscription_preapproval", data: { id: "test-preapproval" } }),
+  });
+  assert.equal(webhook.status, 200);
+  const renewed = await cds.db.run(cds.ql.SELECT.one.from("ave.combatiente.Suscripcion").where({ usuario_ID: ids.a }));
+  assert.equal(Number(renewed.precioMensual), 99);
+});
+
 test("rutas de usuarios y roles retiradas, incluso para el administrador", async () => {
   for (const token of [tokens.a, tokens.admin]) {
     for (const path of ["Usuarios", `Usuarios(${ids.b})`, "Roles"]) {

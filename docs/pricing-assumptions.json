@@ -1,0 +1,28 @@
+{
+  "fecha": "2026-10-16",
+  "railwayMonthlyUSD": 22,
+  "sendgridMonthlyUSD": 20,
+  "squarespaceDomainAnnualUSD": 20,
+  "squarespaceWebsiteMonthlyUSD": 0,
+  "backupMonthlyUSD": 3,
+  "usdToPen": 3.8,
+  "supplierTaxReserve": 0.18,
+  "infrastructureContingency": 0.15,
+  "salesTax": 0.18,
+  "paymentPercent": 0.0349,
+  "paymentFixedPEN": 1,
+  "paymentTax": 0.18,
+  "refundReserve": 0.03,
+  "trialUsers": 50,
+  "trialMonthlyCostPEN": 0.5,
+  "ownerMonthlyPEN": 500,
+  "s3StorageUSDPerGB": 0.023,
+  "s3EgressUSDPerGB": 0.09,
+  "s3PutUSDPer1000": 0.005,
+  "s3GetUSDPer1000": 0.0004,
+  "plans": {
+    "BASICO": { "share": 0.5, "storedGB": 0.05, "egressGB": 0.1, "puts": 20, "gets": 200, "appMonthlyPEN": 0.5 },
+    "PRO": { "share": 0.35, "storedGB": 0.2, "egressGB": 0.5, "puts": 50, "gets": 1000, "appMonthlyPEN": 1 },
+    "PREMIUM": { "share": 0.15, "storedGB": 5, "egressGB": 10, "puts": 500, "gets": 10000, "appMonthlyPEN": 2 }
+  }
+}

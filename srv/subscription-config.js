@@ -11,21 +11,21 @@ const PLANES_SUSCRIPCION = {
     maxAves: 100,
     maxPollitos: 200,
     maxIncubaciones: 50,
-    precioMensual: 19,
+    precioMensual: 19.90,
   },
   PRO: {
     dias: 30,
     maxAves: 500,
     maxPollitos: 1000,
     maxIncubaciones: 250,
-    precioMensual: 49,
+    precioMensual: 34.90,
   },
   PREMIUM: {
     dias: 30,
     maxAves: 999999,
     maxPollitos: 999999,
     maxIncubaciones: 999999,
-    precioMensual: 99,
+    precioMensual: 59.90,
   },
 };
 
@@ -74,6 +74,29 @@ function getPlanConfig(plan) {
   return PLANES_SUSCRIPCION[planKey] ? { plan: planKey, config: PLANES_SUSCRIPCION[planKey] } : null;
 }
 
+// El checkout y la pantalla consultan el mismo catalogo; no contiene datos privados.
+function obtenerPlanesSuscripcion() {
+  return Object.entries(PLANES_SUSCRIPCION)
+    .filter(([plan]) => plan !== "PRUEBA")
+    .map(([plan, config]) => ({
+      plan,
+      precioMensual: config.precioMensual,
+      moneda: "PEN",
+      maxAves: config.maxAves,
+      maxPollitos: config.maxPollitos,
+      maxIncubaciones: config.maxIncubaciones,
+    }));
+}
+
+function construirDatosRenovacion(actual, estado, fechaBase = new Date()) {
+  return {
+    ...construirDatosSuscripcion(actual.plan, estado, fechaBase),
+    // Cambiar el catalogo no cambia el contrato recurrente ya creado en Mercado Pago.
+    precioMensual: actual.precioMensual,
+    moneda: actual.moneda,
+  };
+}
+
 function construirDatosSuscripcion(plan, estado = "ACTIVA", fechaBase = new Date()) {
   const planData = getPlanConfig(plan);
   if (!planData) return null;
@@ -98,6 +121,8 @@ module.exports = {
   MODULOS_POR_PLAN,
   PLANES_SUSCRIPCION,
   construirDatosSuscripcion,
+  construirDatosRenovacion,
+  obtenerPlanesSuscripcion,
   fechaISO,
   getPlanConfig,
   sumarDias,
