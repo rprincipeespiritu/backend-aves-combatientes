@@ -12,6 +12,7 @@ const {
   construirDatosSuscripcion,
   fechaISO,
   getPlanConfig,
+  obtenerPlanesSuscripcion,
   sumarDias,
 } = require("./subscription-config");
 const {
@@ -1108,6 +1109,8 @@ module.exports = cds.service.impl(async function () {
             : "Tu suscripcion esta vencida.",
     };
   }
+
+  this.on("obtenerPlanesSuscripcion", () => ({ planes: obtenerPlanesSuscripcion() }));
 
   this.on("obtenerSuscripcionActual", async (req) => {
     const usuarioId = req.jwtUser?.id;

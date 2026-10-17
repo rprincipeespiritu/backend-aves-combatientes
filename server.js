@@ -3,7 +3,7 @@ const cds = require("@sap/cds");
 const cors = require("cors");
 const crypto = require("crypto");
 const express = require("express");
-const { construirDatosSuscripcion, fechaISO, sumarDias, PLANES_SUSCRIPCION } = require("./srv/subscription-config");
+const { construirDatosRenovacion, fechaISO, sumarDias, PLANES_SUSCRIPCION } = require("./srv/subscription-config");
 const { invalidarCacheSuscripcion } = require("./srv/suscripcion-cache");
 
 require("./srv/security/identity").secret();
@@ -169,7 +169,12 @@ cds.on("bootstrap", (app) => {
         return res.status(200).json({ received: true, preserved: true });
       }
 
-      const datosPlan = construirDatosSuscripcion(planFinal, estadoMp) || {};
+      if (planFinal !== actual.plan && !preapproval.auto_recurring) {
+        throw new Error("Mercado Pago no devolvio el importe del nuevo plan.");
+      }
+      const datosPlan = construirDatosRenovacion(
+        { ...actual, plan: planFinal }, estadoMp, new Date(), preapproval.auto_recurring,
+      );
       const fechaInicio = preapproval.date_created ? new Date(preapproval.date_created) : new Date();
       const fechaFin = preapproval.next_payment_date
         ? new Date(preapproval.next_payment_date)

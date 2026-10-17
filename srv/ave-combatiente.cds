@@ -487,6 +487,17 @@ service AveCombatienteService {
         mensaje            : String;
     };
 
+    action obtenerPlanesSuscripcion() returns {
+        planes : many {
+            plan            : String;
+            precioMensual   : Decimal(10, 2);
+            moneda          : String;
+            maxAves         : Integer;
+            maxPollitos     : Integer;
+            maxIncubaciones : Integer;
+        };
+    };
+
     action   activarSuscripcion(plan: String,
                                 meses: Integer)                                                                                                        returns {
         success : Boolean;
