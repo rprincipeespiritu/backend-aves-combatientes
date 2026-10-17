@@ -1,6 +1,6 @@
 const PLANES_SUSCRIPCION = {
   PRUEBA: {
-    dias: 60,
+    dias: 30,
     maxAves: 999999,
     maxPollitos: 999999,
     maxIncubaciones: 999999,
